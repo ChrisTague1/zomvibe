@@ -36,6 +36,8 @@ fn main() {
         .insert_resource(ZombieSpawnTimer(Timer::from_seconds(spawn_interval, TimerMode::Repeating)))
         .insert_resource(NavGrid::new(map_half, grid_size))
         .insert_resource(TreePositions::default())
+        .insert_resource(FloorSurfaces::default())
+        .insert_resource(HouseWalls::default())
         .add_systems(Startup, (setup_scene, setup_ui, grab_cursor))
         .add_systems(Update, (toggle_pause, pause_button_interaction))
         .add_systems(
@@ -43,6 +45,7 @@ fn main() {
             (
                 player_look,
                 player_move,
+                reload,
                 shoot,
                 spawn_zombies,
                 zombie_ai,
@@ -123,6 +126,8 @@ struct GameState {
     kills: u32,
     score: u32,
     ammo: u32,
+    magazine: u32,
+    reload_timer: Option<Timer>,
     health: f32,
     last_hit_time: f32,
     hit_count_in_window: u32,
@@ -151,6 +156,29 @@ struct ZombieSpawnTimer(Timer);
 
 #[derive(Resource, Default)]
 struct TreePositions(Vec<Vec2>);
+
+struct FloorRect {
+    min_x: f32,
+    max_x: f32,
+    min_z: f32,
+    max_z: f32,
+    y: f32,
+}
+
+struct WallRect {
+    min_x: f32,
+    max_x: f32,
+    min_z: f32,
+    max_z: f32,
+    min_y: f32,
+    max_y: f32,
+}
+
+#[derive(Resource, Default)]
+struct FloorSurfaces(Vec<FloorRect>);
+
+#[derive(Resource, Default)]
+struct HouseWalls(Vec<WallRect>);
 
 // ── A* Navigation Grid ──────────────────────────────────────────────────────
 
@@ -348,12 +376,15 @@ fn setup_scene(
     mut nav_grid: ResMut<NavGrid>,
     mut tree_positions: ResMut<TreePositions>,
     map_config: Res<MapConfig>,
+    mut floor_surfaces: ResMut<FloorSurfaces>,
+    mut house_walls: ResMut<HouseWalls>,
 ) {
     let map_half = map_config.map_half();
     let tree_radius = map_config.trees.collision_radius;
 
     game.health = map_config.player.health;
-    game.ammo = map_config.player.ammo;
+    game.ammo = map_config.player.ammo.saturating_sub(10);
+    game.magazine = map_config.player.ammo.min(10);
     game.is_grounded = true;
 
     // Ground
@@ -466,6 +497,9 @@ fn setup_scene(
     }
 
     tree_positions.0 = trees;
+
+    // Spawn house
+    spawn_house(&mut commands, &mut meshes, &mut materials, &mut nav_grid, &mut floor_surfaces, &mut house_walls);
 
     // Directional light (sun)
     let sa = &map_config.lighting.sun_angle;
@@ -603,7 +637,7 @@ fn setup_ui(mut commands: Commands) {
                     ));
                     p.spawn((
                         AmmoText,
-                        Text::new("Ammo: 100"),
+                        Text::new("Ammo: 10 / 90"),
                         TextFont { font_size: 24.0, ..default() },
                         TextColor(Color::WHITE),
                     ));
@@ -724,6 +758,230 @@ fn collides_with_tree(pos: Vec2, radius: f32, trees: &[Vec2], tree_radius: f32) 
     None
 }
 
+fn collide_with_walls(pos: &mut Vec3, radius: f32, walls: &HouseWalls) {
+    for wall in &walls.0 {
+        if pos.y < wall.min_y || pos.y > wall.max_y {
+            continue;
+        }
+        let exp_min_x = wall.min_x - radius;
+        let exp_max_x = wall.max_x + radius;
+        let exp_min_z = wall.min_z - radius;
+        let exp_max_z = wall.max_z + radius;
+        if pos.x > exp_min_x && pos.x < exp_max_x && pos.z > exp_min_z && pos.z < exp_max_z {
+            let push_left = pos.x - exp_min_x;
+            let push_right = exp_max_x - pos.x;
+            let push_back = pos.z - exp_min_z;
+            let push_front = exp_max_z - pos.z;
+            let min_push = push_left.min(push_right).min(push_back).min(push_front);
+            if min_push == push_left {
+                pos.x = exp_min_x;
+            } else if min_push == push_right {
+                pos.x = exp_max_x;
+            } else if min_push == push_back {
+                pos.z = exp_min_z;
+            } else {
+                pos.z = exp_max_z;
+            }
+        }
+    }
+}
+
+fn spawn_house(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    nav_grid: &mut ResMut<NavGrid>,
+    floor_surfaces: &mut ResMut<FloorSurfaces>,
+    house_walls: &mut ResMut<HouseWalls>,
+) {
+    let wall_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.6, 0.55, 0.45),
+        ..default()
+    });
+    let floor_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.5, 0.35, 0.2),
+        ..default()
+    });
+    let stair_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.45, 0.3, 0.15),
+        ..default()
+    });
+    let railing_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.4, 0.4, 0.4),
+        ..default()
+    });
+
+    // ── Ground floor walls ──
+    // North wall
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(10.0, 3.0, 0.3))),
+        MeshMaterial3d(wall_mat.clone()),
+        Transform::from_xyz(0.0, 1.5, -5.0),
+    ));
+    // South wall - left of door
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(3.5, 3.0, 0.3))),
+        MeshMaterial3d(wall_mat.clone()),
+        Transform::from_xyz(-3.25, 1.5, 5.0),
+    ));
+    // South wall - right of door
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(3.5, 3.0, 0.3))),
+        MeshMaterial3d(wall_mat.clone()),
+        Transform::from_xyz(3.25, 1.5, 5.0),
+    ));
+    // East wall
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(0.3, 3.0, 10.0))),
+        MeshMaterial3d(wall_mat.clone()),
+        Transform::from_xyz(5.0, 1.5, 0.0),
+    ));
+    // West wall
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(0.3, 3.0, 10.0))),
+        MeshMaterial3d(wall_mat.clone()),
+        Transform::from_xyz(-5.0, 1.5, 0.0),
+    ));
+
+    // ── Second floor slab (stairwell hole in SW corner) ──
+    // Piece 1: full width, z from -5 to 2.5
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(10.0, 0.2, 7.5))),
+        MeshMaterial3d(floor_mat.clone()),
+        Transform::from_xyz(0.0, 3.0, -1.25),
+    ));
+    // Piece 2: east portion, z from 2.5 to 5.0, x from -2.5 to 5.0
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(7.5, 0.2, 2.5))),
+        MeshMaterial3d(floor_mat.clone()),
+        Transform::from_xyz(1.25, 3.0, 3.75),
+    ));
+
+    // ── Second floor walls ──
+    // North
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(10.0, 3.0, 0.3))),
+        MeshMaterial3d(wall_mat.clone()),
+        Transform::from_xyz(0.0, 4.5, -5.0),
+    ));
+    // South
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(10.0, 3.0, 0.3))),
+        MeshMaterial3d(wall_mat.clone()),
+        Transform::from_xyz(0.0, 4.5, 5.0),
+    ));
+    // West
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(0.3, 3.0, 10.0))),
+        MeshMaterial3d(wall_mat.clone()),
+        Transform::from_xyz(-5.0, 4.5, 0.0),
+    ));
+    // East - with balcony door (3 wide centered at z=0)
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(0.3, 3.0, 3.5))),
+        MeshMaterial3d(wall_mat.clone()),
+        Transform::from_xyz(5.0, 4.5, -3.25),
+    ));
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(0.3, 3.0, 3.5))),
+        MeshMaterial3d(wall_mat.clone()),
+        Transform::from_xyz(5.0, 4.5, 3.25),
+    ));
+
+    // ── Stairs (8 steps in SW corner, rising south-to-north) ──
+    for i in 0..8u32 {
+        let step_height = (i + 1) as f32 * 0.375;
+        let step_z = 4.55 - i as f32 * 0.3;
+        commands.spawn((
+            Mesh3d(meshes.add(Cuboid::new(2.5, step_height, 0.3))),
+            MeshMaterial3d(stair_mat.clone()),
+            Transform::from_xyz(-3.45, step_height / 2.0, step_z),
+        ));
+    }
+
+    // ── Balcony (east of east wall at Y=3.0) ──
+    // Platform
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(3.0, 0.2, 6.0))),
+        MeshMaterial3d(floor_mat.clone()),
+        Transform::from_xyz(6.5, 3.0, 0.0),
+    ));
+    // Railings (1.0 tall, jumpable)
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(3.0, 1.0, 0.1))),
+        MeshMaterial3d(railing_mat.clone()),
+        Transform::from_xyz(6.5, 3.6, -3.0),
+    ));
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(3.0, 1.0, 0.1))),
+        MeshMaterial3d(railing_mat.clone()),
+        Transform::from_xyz(6.5, 3.6, 3.0),
+    ));
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(0.1, 1.0, 6.0))),
+        MeshMaterial3d(railing_mat.clone()),
+        Transform::from_xyz(8.0, 3.6, 0.0),
+    ));
+
+    // ── Roof slab ──
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(10.0, 0.2, 10.0))),
+        MeshMaterial3d(wall_mat.clone()),
+        Transform::from_xyz(0.0, 6.0, 0.0),
+    ));
+
+    // ── Floor surfaces for collision ──
+    // Second floor piece 1
+    floor_surfaces.0.push(FloorRect { min_x: -5.0, max_x: 5.0, min_z: -5.0, max_z: 2.5, y: 3.0 });
+    // Second floor piece 2
+    floor_surfaces.0.push(FloorRect { min_x: -2.5, max_x: 5.0, min_z: 2.5, max_z: 5.0, y: 3.0 });
+    // Balcony
+    floor_surfaces.0.push(FloorRect { min_x: 5.0, max_x: 8.0, min_z: -3.0, max_z: 3.0, y: 3.0 });
+    // Stair steps
+    for i in 0..8u32 {
+        let step_y = (i + 1) as f32 * 0.375;
+        let step_z_center = 4.55 - i as f32 * 0.3;
+        floor_surfaces.0.push(FloorRect {
+            min_x: -4.7,
+            max_x: -2.2,
+            min_z: step_z_center - 0.15,
+            max_z: step_z_center + 0.15,
+            y: step_y,
+        });
+    }
+
+    // ── Wall collision rects ──
+    // Ground floor walls (y: 0 to 3)
+    house_walls.0.push(WallRect { min_x: -5.15, max_x: 5.15, min_z: -5.15, max_z: -4.85, min_y: 0.0, max_y: 3.0 }); // North
+    house_walls.0.push(WallRect { min_x: -5.15, max_x: -1.5, min_z: 4.85, max_z: 5.15, min_y: 0.0, max_y: 3.0 }); // South left
+    house_walls.0.push(WallRect { min_x: 1.5, max_x: 5.15, min_z: 4.85, max_z: 5.15, min_y: 0.0, max_y: 3.0 }); // South right
+    house_walls.0.push(WallRect { min_x: 4.85, max_x: 5.15, min_z: -5.15, max_z: 5.15, min_y: 0.0, max_y: 3.0 }); // East
+    house_walls.0.push(WallRect { min_x: -5.15, max_x: -4.85, min_z: -5.15, max_z: 5.15, min_y: 0.0, max_y: 3.0 }); // West
+    // Second floor walls (y: 3 to 6)
+    house_walls.0.push(WallRect { min_x: -5.15, max_x: 5.15, min_z: -5.15, max_z: -4.85, min_y: 3.0, max_y: 6.0 }); // North
+    house_walls.0.push(WallRect { min_x: -5.15, max_x: 5.15, min_z: 4.85, max_z: 5.15, min_y: 3.0, max_y: 6.0 }); // South
+    house_walls.0.push(WallRect { min_x: -5.15, max_x: -4.85, min_z: -5.15, max_z: 5.15, min_y: 3.0, max_y: 6.0 }); // West
+    house_walls.0.push(WallRect { min_x: 4.85, max_x: 5.15, min_z: -5.15, max_z: -1.5, min_y: 3.0, max_y: 6.0 }); // East top
+    house_walls.0.push(WallRect { min_x: 4.85, max_x: 5.15, min_z: 1.5, max_z: 5.15, min_y: 3.0, max_y: 6.0 }); // East bottom
+    // Balcony railings (y: 3.1 to 4.1, jumpable)
+    house_walls.0.push(WallRect { min_x: 5.0, max_x: 8.05, min_z: -3.05, max_z: -2.95, min_y: 3.1, max_y: 4.1 }); // North
+    house_walls.0.push(WallRect { min_x: 5.0, max_x: 8.05, min_z: 2.95, max_z: 3.05, min_y: 3.1, max_y: 4.1 }); // South
+    house_walls.0.push(WallRect { min_x: 7.95, max_x: 8.05, min_z: -3.05, max_z: 3.05, min_y: 3.1, max_y: 4.1 }); // East
+
+    // ── Block nav grid ──
+    for gx in 0..nav_grid.grid_size {
+        for gz in 0..nav_grid.grid_size {
+            let world = nav_grid.grid_to_world(gx, gz);
+            let in_house = world.x >= -5.5 && world.x <= 5.5 && world.y >= -5.5 && world.y <= 5.5;
+            let in_balcony = world.x >= 5.0 && world.x <= 8.5 && world.y >= -3.5 && world.y <= 3.5;
+            if in_house || in_balcony {
+                let idx = nav_grid.idx(gx, gz);
+                nav_grid.blocked[idx] = true;
+            }
+        }
+    }
+}
+
 // ── Player Systems ────────────────────────────────────────────────────────────
 
 fn player_look(
@@ -758,6 +1016,8 @@ fn player_move(
     mut player_q: Query<&mut Transform, With<Player>>,
     tree_positions: Res<TreePositions>,
     map_config: Res<MapConfig>,
+    floor_surfaces: Res<FloorSurfaces>,
+    house_walls: Res<HouseWalls>,
 ) {
     if game.is_dead {
         return;
@@ -796,6 +1056,9 @@ fn player_move(
             transform.translation.x += push.x;
             transform.translation.z += push.y;
         }
+
+        // Wall collision
+        collide_with_walls(&mut transform.translation, PLAYER_RADIUS, &house_walls);
     }
 
     // Clamp to map bounds
@@ -814,7 +1077,19 @@ fn player_move(
     game.vertical_velocity -= gravity * time.delta_secs();
     transform.translation.y += game.vertical_velocity * time.delta_secs();
 
-    let ground_y = 0.9;
+    // Dynamic ground detection
+    let px = transform.translation.x;
+    let pz = transform.translation.z;
+    let mut ground_y = 0.9_f32;
+    for floor in &floor_surfaces.0 {
+        if px >= floor.min_x && px <= floor.max_x && pz >= floor.min_z && pz <= floor.max_z {
+            let standing_y = floor.y + 0.9;
+            if standing_y <= transform.translation.y + 0.5 {
+                ground_y = ground_y.max(standing_y);
+            }
+        }
+    }
+
     if transform.translation.y <= ground_y {
         transform.translation.y = ground_y;
         game.vertical_velocity = 0.0;
@@ -823,6 +1098,38 @@ fn player_move(
 }
 
 // ── Shooting ──────────────────────────────────────────────────────────────────
+
+fn reload(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut game: ResMut<GameState>,
+    time: Res<Time>,
+    mut ammo_text: Query<&mut Text, With<AmmoText>>,
+) {
+    if game.is_dead { return; }
+
+    // Tick reload timer if active
+    if let Some(ref mut timer) = game.reload_timer {
+        timer.tick(time.delta());
+        if timer.finished() {
+            let refill = (10 - game.magazine).min(game.ammo);
+            game.magazine += refill;
+            game.ammo -= refill;
+            game.reload_timer = None;
+            if let Ok(mut text) = ammo_text.get_single_mut() {
+                **text = format!("Ammo: {} / {}", game.magazine, game.ammo);
+            }
+        }
+        return;
+    }
+
+    // Manual reload with R (only if magazine isn't full and we have reserve ammo)
+    if keys.just_pressed(KeyCode::KeyR) && game.magazine < 10 && game.ammo > 0 {
+        game.reload_timer = Some(Timer::from_seconds(2.0, TimerMode::Once));
+        if let Ok(mut text) = ammo_text.get_single_mut() {
+            **text = "Reloading...".to_string();
+        }
+    }
+}
 
 fn shoot(
     mut commands: Commands,
@@ -837,13 +1144,33 @@ fn shoot(
     if game.is_dead || !mouse.just_pressed(MouseButton::Left) {
         return;
     }
-    if game.ammo == 0 {
+    // Can't fire while reloading
+    if game.reload_timer.is_some() {
         return;
     }
-    game.ammo -= 1;
-    if let Ok(mut text) = ammo_text.get_single_mut() {
-        **text = format!("Ammo: {}", game.ammo);
+    if game.magazine == 0 {
+        // Auto-reload if we have reserve ammo
+        if game.ammo > 0 {
+            game.reload_timer = Some(Timer::from_seconds(2.0, TimerMode::Once));
+            if let Ok(mut text) = ammo_text.get_single_mut() {
+                **text = "Reloading...".to_string();
+            }
+        }
+        return;
     }
+    game.magazine -= 1;
+    if let Ok(mut text) = ammo_text.get_single_mut() {
+        **text = format!("Ammo: {} / {}", game.magazine, game.ammo);
+    }
+
+    // Auto-reload when magazine hits 0
+    if game.magazine == 0 && game.ammo > 0 {
+        game.reload_timer = Some(Timer::from_seconds(2.0, TimerMode::Once));
+        if let Ok(mut text) = ammo_text.get_single_mut() {
+            **text = "Reloading...".to_string();
+        }
+    }
+
     let Ok(pt) = player_q.get_single() else { return };
     let Ok(at) = anchor_q.get_single() else { return };
 

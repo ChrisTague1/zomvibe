@@ -111,7 +111,7 @@ pub fn default_map_config() -> MapConfig {
             placement: TreePlacement::Random {
                 count: 50,
                 min_spacing: 3.5,
-                clear_radius: 6.0,
+                clear_radius: 10.0,
             },
             trunk: TrunkSettings { size: [0.8, 4.0, 0.8], color: [0.45, 0.25, 0.1] },
             canopy: CanopySettings { size: [2.5, 2.5, 2.5], color: [0.1, 0.45, 0.1] },
@@ -123,7 +123,7 @@ pub fn default_map_config() -> MapConfig {
             ambient_brightness: 300.0,
         },
         player: PlayerSettings {
-            spawn: [0.0, 0.9, 0.0],
+            spawn: [0.0, 0.9, 7.0],
             health: 100.0,
             ammo: 100,
             speed: 5.0,

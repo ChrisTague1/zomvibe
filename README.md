@@ -122,6 +122,8 @@ As you kill more zombies, the horde adapts:
 - **[Bevy 0.15](https://bevyengine.org/)** — data-driven ECS game engine built for Rust
 - **[rand 0.8](https://docs.rs/rand)** — zombie spawn positions, AI decision rolls
 
+- https://github.com/cBournhonesque/lightyear
+
 ---
 
 ## Running Locally

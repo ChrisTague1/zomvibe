@@ -9,6 +9,7 @@ pub struct MapConfig {
     pub ground: GroundSettings,
     pub walls: WallSettings,
     pub trees: TreeSettings,
+    pub structures: Vec<StructurePlacement>,
     pub lighting: LightingSettings,
     pub player: PlayerSettings,
     pub zombies: ZombieSettings,
@@ -59,6 +60,19 @@ pub struct TrunkSettings {
 pub struct CanopySettings {
     pub size: [f32; 3],
     pub color: [f32; 3],
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub enum StructureType {
+    House,
+    Hut,
+    Castle,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct StructurePlacement {
+    pub kind: StructureType,
+    pub position: [f32; 2],
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -117,6 +131,7 @@ pub fn default_map_config() -> MapConfig {
             canopy: CanopySettings { size: [2.5, 2.5, 2.5], color: [0.1, 0.45, 0.1] },
             collision_radius: 1.2,
         },
+        structures: vec![StructurePlacement { kind: StructureType::House, position: [0.0, 0.0] }],
         lighting: LightingSettings {
             sun_illuminance: 10000.0,
             sun_angle: [-0.8, 0.4, 0.0],

@@ -8,7 +8,7 @@ use std::collections::BinaryHeap;
 use std::cmp::Ordering;
 
 mod map;
-use map::{MapConfig, TreePlacement, load_map_config, default_map_config};
+use map::{MapConfig, TreePlacement, StructureType, load_map_config, default_map_config};
 
 // ── App State ────────────────────────────────────────────────────────────────
 
@@ -750,8 +750,16 @@ fn setup_scene(
 
     tree_positions.0 = trees;
 
-    // Spawn house
-    spawn_house(&mut commands, &mut meshes, &mut materials, &mut nav_grid, &mut floor_surfaces.0, &mut house_walls.0);
+    // Spawn structures
+    for s in &map_config.structures {
+        let ox = s.position[0];
+        let oz = s.position[1];
+        match s.kind {
+            StructureType::House => spawn_house(&mut commands, &mut meshes, &mut materials, &mut nav_grid, &mut floor_surfaces.0, &mut house_walls.0, ox, oz),
+            StructureType::Hut => spawn_hut(&mut commands, &mut meshes, &mut materials, &mut nav_grid, &mut floor_surfaces.0, &mut house_walls.0, ox, oz),
+            StructureType::Castle => spawn_castle(&mut commands, &mut meshes, &mut materials, &mut nav_grid, &mut floor_surfaces.0, &mut house_walls.0, ox, oz),
+        }
+    }
 
     // Directional light (sun)
     let sa = &map_config.lighting.sun_angle;
@@ -1052,6 +1060,8 @@ fn spawn_house(
     nav_grid: &mut NavGrid,
     floor_surfaces: &mut Vec<FloorRect>,
     house_walls: &mut Vec<WallRect>,
+    ox: f32,
+    oz: f32,
 ) {
     let wall_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.6, 0.55, 0.45),
@@ -1071,169 +1081,567 @@ fn spawn_house(
     });
 
     // ── Ground floor walls ──
-    // North wall
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(10.0, 3.0, 0.3))),
         MeshMaterial3d(wall_mat.clone()),
-        Transform::from_xyz(0.0, 1.5, -5.0),
+        Transform::from_xyz(ox, 1.5, oz - 5.0),
     ));
-    // South wall - left of door
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(3.5, 3.0, 0.3))),
         MeshMaterial3d(wall_mat.clone()),
-        Transform::from_xyz(-3.25, 1.5, 5.0),
+        Transform::from_xyz(ox - 3.25, 1.5, oz + 5.0),
     ));
-    // South wall - right of door
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(3.5, 3.0, 0.3))),
         MeshMaterial3d(wall_mat.clone()),
-        Transform::from_xyz(3.25, 1.5, 5.0),
+        Transform::from_xyz(ox + 3.25, 1.5, oz + 5.0),
     ));
-    // East wall
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(0.3, 3.0, 10.0))),
         MeshMaterial3d(wall_mat.clone()),
-        Transform::from_xyz(5.0, 1.5, 0.0),
+        Transform::from_xyz(ox + 5.0, 1.5, oz),
     ));
-    // West wall
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(0.3, 3.0, 10.0))),
         MeshMaterial3d(wall_mat.clone()),
-        Transform::from_xyz(-5.0, 1.5, 0.0),
+        Transform::from_xyz(ox - 5.0, 1.5, oz),
     ));
 
-    // ── Second floor slab (stairwell hole in SW corner) ──
-    // Piece 1: full width, z from -5 to 2.5
+    // ── Second floor slab ──
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(10.0, 0.2, 7.5))),
         MeshMaterial3d(floor_mat.clone()),
-        Transform::from_xyz(0.0, 3.0, -1.25),
+        Transform::from_xyz(ox, 3.0, oz - 1.25),
     ));
-    // Piece 2: east portion, z from 2.5 to 5.0, x from -2.5 to 5.0
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(7.5, 0.2, 2.5))),
         MeshMaterial3d(floor_mat.clone()),
-        Transform::from_xyz(1.25, 3.0, 3.75),
+        Transform::from_xyz(ox + 1.25, 3.0, oz + 3.75),
     ));
 
     // ── Second floor walls ──
-    // North
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(10.0, 3.0, 0.3))),
         MeshMaterial3d(wall_mat.clone()),
-        Transform::from_xyz(0.0, 4.5, -5.0),
+        Transform::from_xyz(ox, 4.5, oz - 5.0),
     ));
-    // South
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(10.0, 3.0, 0.3))),
         MeshMaterial3d(wall_mat.clone()),
-        Transform::from_xyz(0.0, 4.5, 5.0),
+        Transform::from_xyz(ox, 4.5, oz + 5.0),
     ));
-    // West
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(0.3, 3.0, 10.0))),
         MeshMaterial3d(wall_mat.clone()),
-        Transform::from_xyz(-5.0, 4.5, 0.0),
-    ));
-    // East - with balcony door (3 wide centered at z=0)
-    commands.spawn((
-        Mesh3d(meshes.add(Cuboid::new(0.3, 3.0, 3.5))),
-        MeshMaterial3d(wall_mat.clone()),
-        Transform::from_xyz(5.0, 4.5, -3.25),
+        Transform::from_xyz(ox - 5.0, 4.5, oz),
     ));
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(0.3, 3.0, 3.5))),
         MeshMaterial3d(wall_mat.clone()),
-        Transform::from_xyz(5.0, 4.5, 3.25),
+        Transform::from_xyz(ox + 5.0, 4.5, oz - 3.25),
+    ));
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(0.3, 3.0, 3.5))),
+        MeshMaterial3d(wall_mat.clone()),
+        Transform::from_xyz(ox + 5.0, 4.5, oz + 3.25),
     ));
 
-    // ── Stairs (8 steps in SW corner, rising south-to-north) ──
+    // ── Stairs ──
     for i in 0..8u32 {
         let step_height = (i + 1) as f32 * 0.375;
         let step_z = 4.55 - i as f32 * 0.3;
         commands.spawn((
             Mesh3d(meshes.add(Cuboid::new(2.5, step_height, 0.3))),
             MeshMaterial3d(stair_mat.clone()),
-            Transform::from_xyz(-3.45, step_height / 2.0, step_z),
+            Transform::from_xyz(ox - 3.45, step_height / 2.0, oz + step_z),
         ));
     }
 
-    // ── Balcony (east of east wall at Y=3.0) ──
-    // Platform
+    // ── Balcony ──
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(3.0, 0.2, 6.0))),
         MeshMaterial3d(floor_mat.clone()),
-        Transform::from_xyz(6.5, 3.0, 0.0),
-    ));
-    // Railings (1.0 tall, jumpable)
-    commands.spawn((
-        Mesh3d(meshes.add(Cuboid::new(3.0, 1.0, 0.1))),
-        MeshMaterial3d(railing_mat.clone()),
-        Transform::from_xyz(6.5, 3.6, -3.0),
+        Transform::from_xyz(ox + 6.5, 3.0, oz),
     ));
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(3.0, 1.0, 0.1))),
         MeshMaterial3d(railing_mat.clone()),
-        Transform::from_xyz(6.5, 3.6, 3.0),
+        Transform::from_xyz(ox + 6.5, 3.6, oz - 3.0),
+    ));
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(3.0, 1.0, 0.1))),
+        MeshMaterial3d(railing_mat.clone()),
+        Transform::from_xyz(ox + 6.5, 3.6, oz + 3.0),
     ));
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(0.1, 1.0, 6.0))),
         MeshMaterial3d(railing_mat.clone()),
-        Transform::from_xyz(8.0, 3.6, 0.0),
+        Transform::from_xyz(ox + 8.0, 3.6, oz),
     ));
 
     // ── Roof slab ──
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(10.0, 0.2, 10.0))),
         MeshMaterial3d(wall_mat.clone()),
-        Transform::from_xyz(0.0, 6.0, 0.0),
+        Transform::from_xyz(ox, 6.0, oz),
     ));
 
     // ── Floor surfaces for collision ──
-    // Second floor piece 1
-    floor_surfaces.push(FloorRect { min_x: -5.0, max_x: 5.0, min_z: -5.0, max_z: 2.5, y: 3.0 });
-    // Second floor piece 2
-    floor_surfaces.push(FloorRect { min_x: -2.5, max_x: 5.0, min_z: 2.5, max_z: 5.0, y: 3.0 });
-    // Balcony
-    floor_surfaces.push(FloorRect { min_x: 5.0, max_x: 8.0, min_z: -3.0, max_z: 3.0, y: 3.0 });
-    // Stair steps
+    floor_surfaces.push(FloorRect { min_x: ox - 5.0, max_x: ox + 5.0, min_z: oz - 5.0, max_z: oz + 2.5, y: 3.0 });
+    floor_surfaces.push(FloorRect { min_x: ox - 2.5, max_x: ox + 5.0, min_z: oz + 2.5, max_z: oz + 5.0, y: 3.0 });
+    floor_surfaces.push(FloorRect { min_x: ox + 5.0, max_x: ox + 8.0, min_z: oz - 3.0, max_z: oz + 3.0, y: 3.0 });
     for i in 0..8u32 {
         let step_y = (i + 1) as f32 * 0.375;
         let step_z_center = 4.55 - i as f32 * 0.3;
         floor_surfaces.push(FloorRect {
-            min_x: -4.7,
-            max_x: -2.2,
-            min_z: step_z_center - 0.15,
-            max_z: step_z_center + 0.15,
+            min_x: ox - 4.7,
+            max_x: ox - 2.2,
+            min_z: oz + step_z_center - 0.15,
+            max_z: oz + step_z_center + 0.15,
             y: step_y,
         });
     }
 
     // ── Wall collision rects ──
-    // Ground floor walls (y: 0 to 3)
-    house_walls.push(WallRect { min_x: -5.15, max_x: 5.15, min_z: -5.15, max_z: -4.85, min_y: 0.0, max_y: 3.0 }); // North
-    house_walls.push(WallRect { min_x: -5.15, max_x: -1.5, min_z: 4.85, max_z: 5.15, min_y: 0.0, max_y: 3.0 }); // South left
-    house_walls.push(WallRect { min_x: 1.5, max_x: 5.15, min_z: 4.85, max_z: 5.15, min_y: 0.0, max_y: 3.0 }); // South right
-    house_walls.push(WallRect { min_x: 4.85, max_x: 5.15, min_z: -5.15, max_z: 5.15, min_y: 0.0, max_y: 3.0 }); // East
-    house_walls.push(WallRect { min_x: -5.15, max_x: -4.85, min_z: -5.15, max_z: 5.15, min_y: 0.0, max_y: 3.0 }); // West
-    // Second floor walls (y: 3 to 6)
-    house_walls.push(WallRect { min_x: -5.15, max_x: 5.15, min_z: -5.15, max_z: -4.85, min_y: 3.0, max_y: 6.0 }); // North
-    house_walls.push(WallRect { min_x: -5.15, max_x: 5.15, min_z: 4.85, max_z: 5.15, min_y: 3.0, max_y: 6.0 }); // South
-    house_walls.push(WallRect { min_x: -5.15, max_x: -4.85, min_z: -5.15, max_z: 5.15, min_y: 3.0, max_y: 6.0 }); // West
-    house_walls.push(WallRect { min_x: 4.85, max_x: 5.15, min_z: -5.15, max_z: -1.5, min_y: 3.0, max_y: 6.0 }); // East top
-    house_walls.push(WallRect { min_x: 4.85, max_x: 5.15, min_z: 1.5, max_z: 5.15, min_y: 3.0, max_y: 6.0 }); // East bottom
-    // Balcony railings (y: 3.1 to 4.1, jumpable)
-    house_walls.push(WallRect { min_x: 5.0, max_x: 8.05, min_z: -3.05, max_z: -2.95, min_y: 3.1, max_y: 4.1 }); // North
-    house_walls.push(WallRect { min_x: 5.0, max_x: 8.05, min_z: 2.95, max_z: 3.05, min_y: 3.1, max_y: 4.1 }); // South
-    house_walls.push(WallRect { min_x: 7.95, max_x: 8.05, min_z: -3.05, max_z: 3.05, min_y: 3.1, max_y: 4.1 }); // East
+    house_walls.push(WallRect { min_x: ox - 5.15, max_x: ox + 5.15, min_z: oz - 5.15, max_z: oz - 4.85, min_y: 0.0, max_y: 3.0 });
+    house_walls.push(WallRect { min_x: ox - 5.15, max_x: ox - 1.5, min_z: oz + 4.85, max_z: oz + 5.15, min_y: 0.0, max_y: 3.0 });
+    house_walls.push(WallRect { min_x: ox + 1.5, max_x: ox + 5.15, min_z: oz + 4.85, max_z: oz + 5.15, min_y: 0.0, max_y: 3.0 });
+    house_walls.push(WallRect { min_x: ox + 4.85, max_x: ox + 5.15, min_z: oz - 5.15, max_z: oz + 5.15, min_y: 0.0, max_y: 3.0 });
+    house_walls.push(WallRect { min_x: ox - 5.15, max_x: ox - 4.85, min_z: oz - 5.15, max_z: oz + 5.15, min_y: 0.0, max_y: 3.0 });
+    house_walls.push(WallRect { min_x: ox - 5.15, max_x: ox + 5.15, min_z: oz - 5.15, max_z: oz - 4.85, min_y: 3.0, max_y: 6.0 });
+    house_walls.push(WallRect { min_x: ox - 5.15, max_x: ox + 5.15, min_z: oz + 4.85, max_z: oz + 5.15, min_y: 3.0, max_y: 6.0 });
+    house_walls.push(WallRect { min_x: ox - 5.15, max_x: ox - 4.85, min_z: oz - 5.15, max_z: oz + 5.15, min_y: 3.0, max_y: 6.0 });
+    house_walls.push(WallRect { min_x: ox + 4.85, max_x: ox + 5.15, min_z: oz - 5.15, max_z: oz - 1.5, min_y: 3.0, max_y: 6.0 });
+    house_walls.push(WallRect { min_x: ox + 4.85, max_x: ox + 5.15, min_z: oz + 1.5, max_z: oz + 5.15, min_y: 3.0, max_y: 6.0 });
+    house_walls.push(WallRect { min_x: ox + 5.0, max_x: ox + 8.05, min_z: oz - 3.05, max_z: oz - 2.95, min_y: 3.1, max_y: 4.1 });
+    house_walls.push(WallRect { min_x: ox + 5.0, max_x: ox + 8.05, min_z: oz + 2.95, max_z: oz + 3.05, min_y: 3.1, max_y: 4.1 });
+    house_walls.push(WallRect { min_x: ox + 7.95, max_x: ox + 8.05, min_z: oz - 3.05, max_z: oz + 3.05, min_y: 3.1, max_y: 4.1 });
 
     // ── Block nav grid ──
     for gx in 0..nav_grid.grid_size {
         for gz in 0..nav_grid.grid_size {
             let world = nav_grid.grid_to_world(gx, gz);
-            let in_house = world.x >= -5.5 && world.x <= 5.5 && world.y >= -5.5 && world.y <= 5.5;
-            let in_balcony = world.x >= 5.0 && world.x <= 8.5 && world.y >= -3.5 && world.y <= 3.5;
+            let in_house = world.x >= ox - 5.5 && world.x <= ox + 5.5 && world.y >= oz - 5.5 && world.y <= oz + 5.5;
+            let in_balcony = world.x >= ox + 5.0 && world.x <= ox + 8.5 && world.y >= oz - 3.5 && world.y <= oz + 3.5;
             if in_house || in_balcony {
+                let idx = nav_grid.idx(gx, gz);
+                nav_grid.blocked[idx] = true;
+            }
+        }
+    }
+}
+
+fn spawn_hut(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    nav_grid: &mut NavGrid,
+    _floor_surfaces: &mut Vec<FloorRect>,
+    house_walls: &mut Vec<WallRect>,
+    ox: f32,
+    oz: f32,
+) {
+    let wall_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.5, 0.4, 0.3),
+        ..default()
+    });
+    let roof_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.4, 0.25, 0.1),
+        ..default()
+    });
+
+    let hw = 2.5; // half-width
+    let h = 2.5;  // wall height
+    let t = 0.2;  // wall thickness
+
+    // North wall
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(hw * 2.0, h, t))),
+        MeshMaterial3d(wall_mat.clone()),
+        Transform::from_xyz(ox, h / 2.0, oz - hw),
+    ));
+    // South wall - left of door
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(1.5, h, t))),
+        MeshMaterial3d(wall_mat.clone()),
+        Transform::from_xyz(ox - 1.75, h / 2.0, oz + hw),
+    ));
+    // South wall - right of door
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(1.5, h, t))),
+        MeshMaterial3d(wall_mat.clone()),
+        Transform::from_xyz(ox + 1.75, h / 2.0, oz + hw),
+    ));
+    // East wall
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(t, h, hw * 2.0))),
+        MeshMaterial3d(wall_mat.clone()),
+        Transform::from_xyz(ox + hw, h / 2.0, oz),
+    ));
+    // West wall
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(t, h, hw * 2.0))),
+        MeshMaterial3d(wall_mat.clone()),
+        Transform::from_xyz(ox - hw, h / 2.0, oz),
+    ));
+    // Roof
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(hw * 2.0 + 0.6, 0.15, hw * 2.0 + 0.6))),
+        MeshMaterial3d(roof_mat),
+        Transform::from_xyz(ox, h + 0.075, oz),
+    ));
+
+    // Wall collision rects
+    house_walls.push(WallRect { min_x: ox - hw - 0.1, max_x: ox + hw + 0.1, min_z: oz - hw - 0.1, max_z: oz - hw + 0.1, min_y: 0.0, max_y: h });
+    house_walls.push(WallRect { min_x: ox - hw - 0.1, max_x: ox - 1.0, min_z: oz + hw - 0.1, max_z: oz + hw + 0.1, min_y: 0.0, max_y: h });
+    house_walls.push(WallRect { min_x: ox + 1.0, max_x: ox + hw + 0.1, min_z: oz + hw - 0.1, max_z: oz + hw + 0.1, min_y: 0.0, max_y: h });
+    house_walls.push(WallRect { min_x: ox + hw - 0.1, max_x: ox + hw + 0.1, min_z: oz - hw - 0.1, max_z: oz + hw + 0.1, min_y: 0.0, max_y: h });
+    house_walls.push(WallRect { min_x: ox - hw - 0.1, max_x: ox - hw + 0.1, min_z: oz - hw - 0.1, max_z: oz + hw + 0.1, min_y: 0.0, max_y: h });
+
+    // Block nav grid
+    for gx in 0..nav_grid.grid_size {
+        for gz in 0..nav_grid.grid_size {
+            let world = nav_grid.grid_to_world(gx, gz);
+            if world.x >= ox - hw - 0.5 && world.x <= ox + hw + 0.5 && world.y >= oz - hw - 0.5 && world.y <= oz + hw + 0.5 {
+                let idx = nav_grid.idx(gx, gz);
+                nav_grid.blocked[idx] = true;
+            }
+        }
+    }
+}
+
+fn spawn_castle(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    nav_grid: &mut NavGrid,
+    floor_surfaces: &mut Vec<FloorRect>,
+    house_walls: &mut Vec<WallRect>,
+    ox: f32,
+    oz: f32,
+) {
+    let stone_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.45, 0.42, 0.38),
+        ..default()
+    });
+    let dark_stone = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.35, 0.32, 0.28),
+        ..default()
+    });
+    let floor_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.4, 0.38, 0.35),
+        ..default()
+    });
+    let stair_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.38, 0.35, 0.3),
+        ..default()
+    });
+
+    let half = 15.0; // 30x30 footprint
+    let wall_h = 8.0;
+    let wall_t = 1.0;
+    let gate_w = 4.0; // gate opening width
+
+    // ── Curtain walls ──
+    // North wall
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(half * 2.0, wall_h, wall_t))),
+        MeshMaterial3d(stone_mat.clone()),
+        Transform::from_xyz(ox, wall_h / 2.0, oz - half),
+    ));
+    // South wall - left of gate
+    let south_side = (half * 2.0 - gate_w) / 2.0;
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(south_side, wall_h, wall_t))),
+        MeshMaterial3d(stone_mat.clone()),
+        Transform::from_xyz(ox - half + south_side / 2.0, wall_h / 2.0, oz + half),
+    ));
+    // South wall - right of gate
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(south_side, wall_h, wall_t))),
+        MeshMaterial3d(stone_mat.clone()),
+        Transform::from_xyz(ox + half - south_side / 2.0, wall_h / 2.0, oz + half),
+    ));
+    // East wall
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(wall_t, wall_h, half * 2.0))),
+        MeshMaterial3d(stone_mat.clone()),
+        Transform::from_xyz(ox + half, wall_h / 2.0, oz),
+    ));
+    // West wall
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(wall_t, wall_h, half * 2.0))),
+        MeshMaterial3d(stone_mat.clone()),
+        Transform::from_xyz(ox - half, wall_h / 2.0, oz),
+    ));
+
+    // ── Battlements (crenellations on top of curtain walls) ──
+    let merlon_w = 1.0;
+    let merlon_h = 1.5;
+    let merlon_spacing = 2.5;
+    // North and south battlements
+    let mut bx = -half + 1.25;
+    while bx <= half - 1.25 {
+        commands.spawn((
+            Mesh3d(meshes.add(Cuboid::new(merlon_w, merlon_h, wall_t))),
+            MeshMaterial3d(stone_mat.clone()),
+            Transform::from_xyz(ox + bx, wall_h + merlon_h / 2.0, oz - half),
+        ));
+        // Skip south merlons over the gate
+        if (bx - 0.0).abs() > gate_w / 2.0 + 0.5 {
+            commands.spawn((
+                Mesh3d(meshes.add(Cuboid::new(merlon_w, merlon_h, wall_t))),
+                MeshMaterial3d(stone_mat.clone()),
+                Transform::from_xyz(ox + bx, wall_h + merlon_h / 2.0, oz + half),
+            ));
+        }
+        bx += merlon_spacing;
+    }
+    // East and west battlements
+    let mut bz = -half + 1.25;
+    while bz <= half - 1.25 {
+        commands.spawn((
+            Mesh3d(meshes.add(Cuboid::new(wall_t, merlon_h, merlon_w))),
+            MeshMaterial3d(stone_mat.clone()),
+            Transform::from_xyz(ox + half, wall_h + merlon_h / 2.0, oz + bz),
+        ));
+        commands.spawn((
+            Mesh3d(meshes.add(Cuboid::new(wall_t, merlon_h, merlon_w))),
+            MeshMaterial3d(stone_mat.clone()),
+            Transform::from_xyz(ox - half, wall_h + merlon_h / 2.0, oz + bz),
+        ));
+        bz += merlon_spacing;
+    }
+
+    // ── Walkway on top of curtain walls ──
+    let walkway_w = 2.0;
+    // North walkway
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(half * 2.0, 0.2, walkway_w))),
+        MeshMaterial3d(floor_mat.clone()),
+        Transform::from_xyz(ox, wall_h, oz - half + walkway_w / 2.0 - 0.5),
+    ));
+    floor_surfaces.push(FloorRect { min_x: ox - half, max_x: ox + half, min_z: oz - half - 0.5, max_z: oz - half + walkway_w - 0.5, y: wall_h });
+    // South walkway (two pieces, gap for gate)
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(south_side, 0.2, walkway_w))),
+        MeshMaterial3d(floor_mat.clone()),
+        Transform::from_xyz(ox - half + south_side / 2.0, wall_h, oz + half - walkway_w / 2.0 + 0.5),
+    ));
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(south_side, 0.2, walkway_w))),
+        MeshMaterial3d(floor_mat.clone()),
+        Transform::from_xyz(ox + half - south_side / 2.0, wall_h, oz + half - walkway_w / 2.0 + 0.5),
+    ));
+    floor_surfaces.push(FloorRect { min_x: ox - half, max_x: ox - gate_w / 2.0, min_z: oz + half - walkway_w + 0.5, max_z: oz + half + 0.5, y: wall_h });
+    floor_surfaces.push(FloorRect { min_x: ox + gate_w / 2.0, max_x: ox + half, min_z: oz + half - walkway_w + 0.5, max_z: oz + half + 0.5, y: wall_h });
+    // East walkway
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(walkway_w, 0.2, half * 2.0))),
+        MeshMaterial3d(floor_mat.clone()),
+        Transform::from_xyz(ox + half - walkway_w / 2.0 + 0.5, wall_h, oz),
+    ));
+    floor_surfaces.push(FloorRect { min_x: ox + half - walkway_w + 0.5, max_x: ox + half + 0.5, min_z: oz - half, max_z: oz + half, y: wall_h });
+    // West walkway
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(walkway_w, 0.2, half * 2.0))),
+        MeshMaterial3d(floor_mat.clone()),
+        Transform::from_xyz(ox - half + walkway_w / 2.0 - 0.5, wall_h, oz),
+    ));
+    floor_surfaces.push(FloorRect { min_x: ox - half - 0.5, max_x: ox - half + walkway_w - 0.5, min_z: oz - half, max_z: oz + half, y: wall_h });
+
+    // ── 4 Corner towers (4x4, 12 tall) ──
+    let tw = 4.0; // tower width
+    let th = 12.0; // tower height
+    let tower_positions = [
+        (ox - half + tw / 2.0, oz - half + tw / 2.0),
+        (ox + half - tw / 2.0, oz - half + tw / 2.0),
+        (ox - half + tw / 2.0, oz + half - tw / 2.0),
+        (ox + half - tw / 2.0, oz + half - tw / 2.0),
+    ];
+    for &(tx, tz) in &tower_positions {
+        // Tower walls (4 sides)
+        commands.spawn((
+            Mesh3d(meshes.add(Cuboid::new(tw, th, 0.3))),
+            MeshMaterial3d(dark_stone.clone()),
+            Transform::from_xyz(tx, th / 2.0, tz - tw / 2.0),
+        ));
+        commands.spawn((
+            Mesh3d(meshes.add(Cuboid::new(tw, th, 0.3))),
+            MeshMaterial3d(dark_stone.clone()),
+            Transform::from_xyz(tx, th / 2.0, tz + tw / 2.0),
+        ));
+        commands.spawn((
+            Mesh3d(meshes.add(Cuboid::new(0.3, th, tw))),
+            MeshMaterial3d(dark_stone.clone()),
+            Transform::from_xyz(tx - tw / 2.0, th / 2.0, tz),
+        ));
+        commands.spawn((
+            Mesh3d(meshes.add(Cuboid::new(0.3, th, tw))),
+            MeshMaterial3d(dark_stone.clone()),
+            Transform::from_xyz(tx + tw / 2.0, th / 2.0, tz),
+        ));
+        // Tower top platform
+        commands.spawn((
+            Mesh3d(meshes.add(Cuboid::new(tw + 0.6, 0.2, tw + 0.6))),
+            MeshMaterial3d(floor_mat.clone()),
+            Transform::from_xyz(tx, th, tz),
+        ));
+        floor_surfaces.push(FloorRect { min_x: tx - tw / 2.0 - 0.3, max_x: tx + tw / 2.0 + 0.3, min_z: tz - tw / 2.0 - 0.3, max_z: tz + tw / 2.0 + 0.3, y: th });
+
+        // Stairs inside tower (spiral-ish, 16 steps from wall walkway to top)
+        let steps = 16;
+        for i in 0..steps {
+            let step_y = wall_h + (i as f32 + 1.0) * (th - wall_h) / steps as f32;
+            let step_z = tz - tw / 2.0 + 0.4 + (i as f32 / steps as f32) * (tw - 0.8);
+            commands.spawn((
+                Mesh3d(meshes.add(Cuboid::new(tw - 0.4, 0.15, 0.25))),
+                MeshMaterial3d(stair_mat.clone()),
+                Transform::from_xyz(tx, step_y, step_z),
+            ));
+            floor_surfaces.push(FloorRect {
+                min_x: tx - tw / 2.0 + 0.2,
+                max_x: tx + tw / 2.0 - 0.2,
+                min_z: step_z - 0.125,
+                max_z: step_z + 0.125,
+                y: step_y,
+            });
+        }
+
+        // Tower wall collisions
+        let thw = tw / 2.0;
+        house_walls.push(WallRect { min_x: tx - thw - 0.15, max_x: tx + thw + 0.15, min_z: tz - thw - 0.15, max_z: tz - thw + 0.15, min_y: 0.0, max_y: th });
+        house_walls.push(WallRect { min_x: tx - thw - 0.15, max_x: tx + thw + 0.15, min_z: tz + thw - 0.15, max_z: tz + thw + 0.15, min_y: 0.0, max_y: th });
+        house_walls.push(WallRect { min_x: tx - thw - 0.15, max_x: tx - thw + 0.15, min_z: tz - thw - 0.15, max_z: tz + thw + 0.15, min_y: 0.0, max_y: th });
+        house_walls.push(WallRect { min_x: tx + thw - 0.15, max_x: tx + thw + 0.15, min_z: tz - thw - 0.15, max_z: tz + thw + 0.15, min_y: 0.0, max_y: th });
+    }
+
+    // ── Central keep (12x12, 10 tall, two stories) ──
+    let kh = 6.0; // keep half-width
+    let keep_h = 10.0;
+    let keep_t = 0.5;
+
+    // Keep walls
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(kh * 2.0, keep_h, keep_t))),
+        MeshMaterial3d(dark_stone.clone()),
+        Transform::from_xyz(ox, keep_h / 2.0, oz - kh),
+    ));
+    // South keep wall - with door
+    let keep_door_w = 3.0;
+    let keep_side = (kh * 2.0 - keep_door_w) / 2.0;
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(keep_side, keep_h, keep_t))),
+        MeshMaterial3d(dark_stone.clone()),
+        Transform::from_xyz(ox - kh + keep_side / 2.0, keep_h / 2.0, oz + kh),
+    ));
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(keep_side, keep_h, keep_t))),
+        MeshMaterial3d(dark_stone.clone()),
+        Transform::from_xyz(ox + kh - keep_side / 2.0, keep_h / 2.0, oz + kh),
+    ));
+    // Door lintel above keep entrance
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(keep_door_w, keep_h - 3.0, keep_t))),
+        MeshMaterial3d(dark_stone.clone()),
+        Transform::from_xyz(ox, 3.0 + (keep_h - 3.0) / 2.0, oz + kh),
+    ));
+    // East wall
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(keep_t, keep_h, kh * 2.0))),
+        MeshMaterial3d(dark_stone.clone()),
+        Transform::from_xyz(ox + kh, keep_h / 2.0, oz),
+    ));
+    // West wall
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(keep_t, keep_h, kh * 2.0))),
+        MeshMaterial3d(dark_stone.clone()),
+        Transform::from_xyz(ox - kh, keep_h / 2.0, oz),
+    ));
+
+    // Keep second floor (at y=5, with stairwell hole in NE corner)
+    let second_y = 5.0;
+    // Main piece
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(kh * 2.0, 0.2, kh * 2.0 - 3.0))),
+        MeshMaterial3d(floor_mat.clone()),
+        Transform::from_xyz(ox, second_y, oz - 1.5),
+    ));
+    floor_surfaces.push(FloorRect { min_x: ox - kh, max_x: ox + kh, min_z: oz - kh, max_z: oz + kh - 3.0, y: second_y });
+    // Side piece (fill except stairwell)
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(kh * 2.0 - 3.0, 0.2, 3.0))),
+        MeshMaterial3d(floor_mat.clone()),
+        Transform::from_xyz(ox - 1.5, second_y, oz + kh - 1.5),
+    ));
+    floor_surfaces.push(FloorRect { min_x: ox - kh, max_x: ox + kh - 3.0, min_z: oz + kh - 3.0, max_z: oz + kh, y: second_y });
+
+    // Keep roof
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(kh * 2.0 + 0.6, 0.2, kh * 2.0 + 0.6))),
+        MeshMaterial3d(dark_stone.clone()),
+        Transform::from_xyz(ox, keep_h, oz),
+    ));
+    floor_surfaces.push(FloorRect { min_x: ox - kh - 0.3, max_x: ox + kh + 0.3, min_z: oz - kh - 0.3, max_z: oz + kh + 0.3, y: keep_h });
+
+    // Keep stairs (in SE corner, going up from ground to second floor)
+    let keep_steps = 12;
+    for i in 0..keep_steps {
+        let step_y = (i as f32 + 1.0) * second_y / keep_steps as f32;
+        let step_z = oz + kh - 0.4 - (i as f32 / keep_steps as f32) * 2.6;
+        commands.spawn((
+            Mesh3d(meshes.add(Cuboid::new(2.5, step_y, 0.22))),
+            MeshMaterial3d(stair_mat.clone()),
+            Transform::from_xyz(ox + kh - 1.5, step_y / 2.0, step_z),
+        ));
+        floor_surfaces.push(FloorRect {
+            min_x: ox + kh - 2.75,
+            max_x: ox + kh - 0.25,
+            min_z: step_z - 0.11,
+            max_z: step_z + 0.11,
+            y: step_y,
+        });
+    }
+
+    // Keep wall collisions
+    house_walls.push(WallRect { min_x: ox - kh - 0.25, max_x: ox + kh + 0.25, min_z: oz - kh - 0.25, max_z: oz - kh + 0.25, min_y: 0.0, max_y: keep_h });
+    house_walls.push(WallRect { min_x: ox - kh - 0.25, max_x: ox - keep_door_w / 2.0, min_z: oz + kh - 0.25, max_z: oz + kh + 0.25, min_y: 0.0, max_y: keep_h });
+    house_walls.push(WallRect { min_x: ox + keep_door_w / 2.0, max_x: ox + kh + 0.25, min_z: oz + kh - 0.25, max_z: oz + kh + 0.25, min_y: 0.0, max_y: keep_h });
+    house_walls.push(WallRect { min_x: ox - keep_door_w / 2.0, max_x: ox + keep_door_w / 2.0, min_z: oz + kh - 0.25, max_z: oz + kh + 0.25, min_y: 3.0, max_y: keep_h });
+    house_walls.push(WallRect { min_x: ox + kh - 0.25, max_x: ox + kh + 0.25, min_z: oz - kh - 0.25, max_z: oz + kh + 0.25, min_y: 0.0, max_y: keep_h });
+    house_walls.push(WallRect { min_x: ox - kh - 0.25, max_x: ox - kh + 0.25, min_z: oz - kh - 0.25, max_z: oz + kh + 0.25, min_y: 0.0, max_y: keep_h });
+
+    // Curtain wall collisions
+    house_walls.push(WallRect { min_x: ox - half - 0.5, max_x: ox + half + 0.5, min_z: oz - half - 0.5, max_z: oz - half + 0.5, min_y: 0.0, max_y: wall_h });
+    house_walls.push(WallRect { min_x: ox - half - 0.5, max_x: ox - gate_w / 2.0, min_z: oz + half - 0.5, max_z: oz + half + 0.5, min_y: 0.0, max_y: wall_h });
+    house_walls.push(WallRect { min_x: ox + gate_w / 2.0, max_x: ox + half + 0.5, min_z: oz + half - 0.5, max_z: oz + half + 0.5, min_y: 0.0, max_y: wall_h });
+    house_walls.push(WallRect { min_x: ox + half - 0.5, max_x: ox + half + 0.5, min_z: oz - half - 0.5, max_z: oz + half + 0.5, min_y: 0.0, max_y: wall_h });
+    house_walls.push(WallRect { min_x: ox - half - 0.5, max_x: ox - half + 0.5, min_z: oz - half - 0.5, max_z: oz + half + 0.5, min_y: 0.0, max_y: wall_h });
+
+    // ── Block nav grid for castle footprint ──
+    for gx in 0..nav_grid.grid_size {
+        for gz in 0..nav_grid.grid_size {
+            let world = nav_grid.grid_to_world(gx, gz);
+            let wx = world.x;
+            let wz = world.y;
+
+            // Block curtain walls
+            let on_north = wz >= oz - half - 1.0 && wz <= oz - half + 1.0 && wx >= ox - half - 1.0 && wx <= ox + half + 1.0;
+            let on_south = wz >= oz + half - 1.0 && wz <= oz + half + 1.0 && wx >= ox - half - 1.0 && wx <= ox + half + 1.0
+                && !((wx - ox).abs() < gate_w / 2.0); // leave gate open
+            let on_east = wx >= ox + half - 1.0 && wx <= ox + half + 1.0 && wz >= oz - half - 1.0 && wz <= oz + half + 1.0;
+            let on_west = wx >= ox - half - 1.0 && wx <= ox - half + 1.0 && wz >= oz - half - 1.0 && wz <= oz + half + 1.0;
+
+            // Block keep
+            let in_keep = wx >= ox - kh - 0.5 && wx <= ox + kh + 0.5 && wz >= oz - kh - 0.5 && wz <= oz + kh + 0.5
+                && !((wx - ox).abs() < keep_door_w / 2.0 && wz > oz + kh - 0.5); // leave keep door open
+
+            // Block towers
+            let in_tower = tower_positions.iter().any(|&(tx, tz)| {
+                wx >= tx - tw / 2.0 - 0.5 && wx <= tx + tw / 2.0 + 0.5 && wz >= tz - tw / 2.0 - 0.5 && wz <= tz + tw / 2.0 + 0.5
+            });
+
+            if on_north || on_south || on_east || on_west || in_keep || in_tower {
                 let idx = nav_grid.idx(gx, gz);
                 nav_grid.blocked[idx] = true;
             }

@@ -7,13 +7,22 @@ use rand::Rng;
 use std::collections::BinaryHeap;
 use std::cmp::Ordering;
 
-const MAP_HALF: f32 = 40.0;
+mod map;
+use map::{MapConfig, TreePlacement, load_map_config, default_map_config};
+
 const GRID_CELL: f32 = 1.0;
-const GRID_SIZE: usize = (MAP_HALF as usize) * 2; // 80x80 grid
-const TREE_RADIUS: f32 = 1.2; // collision radius for trees (trunk ~0.8 wide)
 const PLAYER_RADIUS: f32 = 0.4;
 
 fn main() {
+    let map_config = match std::env::args().nth(1) {
+        Some(path) => load_map_config(&path),
+        None => default_map_config(),
+    };
+
+    let spawn_interval = map_config.zombies.spawn_interval;
+    let map_half = map_config.map_half();
+    let grid_size = (map_half * 2.0 / GRID_CELL) as usize;
+
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -22,9 +31,10 @@ fn main() {
             }),
             ..default()
         }))
+        .insert_resource(map_config)
         .insert_resource(GameState::default())
-        .insert_resource(ZombieSpawnTimer(Timer::from_seconds(3.0, TimerMode::Repeating)))
-        .insert_resource(NavGrid::default())
+        .insert_resource(ZombieSpawnTimer(Timer::from_seconds(spawn_interval, TimerMode::Repeating)))
+        .insert_resource(NavGrid::new(map_half, grid_size))
         .insert_resource(TreePositions::default())
         .add_systems(Startup, (setup_scene, setup_ui, grab_cursor))
         .add_systems(Update, (toggle_pause, pause_button_interaction))
@@ -123,12 +133,12 @@ struct GameState {
 }
 
 impl GameState {
-    fn zombie_speed(&self) -> f32 {
-        4.5 + (self.kills as f32 * 0.08).min(5.0)
+    fn zombie_speed(&self, config: &MapConfig) -> f32 {
+        config.zombies.base_speed + (self.kills as f32 * config.zombies.speed_per_kill).min(config.zombies.max_speed_bonus)
     }
 
-    fn zombie_move_chance(&self) -> f32 {
-        0.6 + (self.kills as f32 * 0.005).min(0.35)
+    fn zombie_move_chance(&self, config: &MapConfig) -> f32 {
+        config.zombies.base_move_chance + (self.kills as f32 * config.zombies.move_chance_per_kill).min(config.zombies.max_move_chance_bonus)
     }
 }
 
@@ -146,48 +156,50 @@ struct TreePositions(Vec<Vec2>);
 
 #[derive(Resource)]
 struct NavGrid {
-    blocked: Vec<bool>, // GRID_SIZE * GRID_SIZE
-}
-
-impl Default for NavGrid {
-    fn default() -> Self {
-        Self {
-            blocked: vec![false; GRID_SIZE * GRID_SIZE],
-        }
-    }
+    blocked: Vec<bool>,
+    map_half: f32,
+    grid_size: usize,
 }
 
 impl NavGrid {
-    fn world_to_grid(world_x: f32, world_z: f32) -> Option<(usize, usize)> {
-        let gx = ((world_x + MAP_HALF) / GRID_CELL) as i32;
-        let gz = ((world_z + MAP_HALF) / GRID_CELL) as i32;
-        if gx >= 0 && gx < GRID_SIZE as i32 && gz >= 0 && gz < GRID_SIZE as i32 {
+    fn new(map_half: f32, grid_size: usize) -> Self {
+        Self {
+            blocked: vec![false; grid_size * grid_size],
+            map_half,
+            grid_size,
+        }
+    }
+
+    fn world_to_grid(&self, world_x: f32, world_z: f32) -> Option<(usize, usize)> {
+        let gx = ((world_x + self.map_half) / GRID_CELL) as i32;
+        let gz = ((world_z + self.map_half) / GRID_CELL) as i32;
+        if gx >= 0 && gx < self.grid_size as i32 && gz >= 0 && gz < self.grid_size as i32 {
             Some((gx as usize, gz as usize))
         } else {
             None
         }
     }
 
-    fn grid_to_world(gx: usize, gz: usize) -> Vec2 {
+    fn grid_to_world(&self, gx: usize, gz: usize) -> Vec2 {
         Vec2::new(
-            gx as f32 * GRID_CELL - MAP_HALF + GRID_CELL * 0.5,
-            gz as f32 * GRID_CELL - MAP_HALF + GRID_CELL * 0.5,
+            gx as f32 * GRID_CELL - self.map_half + GRID_CELL * 0.5,
+            gz as f32 * GRID_CELL - self.map_half + GRID_CELL * 0.5,
         )
     }
 
-    fn idx(gx: usize, gz: usize) -> usize {
-        gz * GRID_SIZE + gx
+    fn idx(&self, gx: usize, gz: usize) -> usize {
+        gz * self.grid_size + gx
     }
 
     fn is_blocked(&self, gx: usize, gz: usize) -> bool {
-        self.blocked[Self::idx(gx, gz)]
+        self.blocked[self.idx(gx, gz)]
     }
 
     fn find_path(&self, start: Vec2, end: Vec2) -> Vec<Vec2> {
-        let Some((sx, sz)) = Self::world_to_grid(start.x, start.y) else {
+        let Some((sx, sz)) = self.world_to_grid(start.x, start.y) else {
             return vec![];
         };
-        let Some((ex, ez)) = Self::world_to_grid(end.x, end.y) else {
+        let Some((ex, ez)) = self.world_to_grid(end.x, end.y) else {
             return vec![];
         };
 
@@ -197,12 +209,12 @@ impl NavGrid {
         }
 
         let mut open = BinaryHeap::new();
-        let total = GRID_SIZE * GRID_SIZE;
+        let total = self.grid_size * self.grid_size;
         let mut g_score = vec![f32::INFINITY; total];
         let mut came_from = vec![(usize::MAX, usize::MAX); total];
         let mut closed = vec![false; total];
 
-        g_score[Self::idx(sx, sz)] = 0.0;
+        g_score[self.idx(sx, sz)] = 0.0;
         let h = heuristic(sx, sz, ex, ez);
         open.push(AStarNode { gx: sx, gz: sz, f: h });
 
@@ -229,7 +241,7 @@ impl NavGrid {
                 break;
             }
 
-            let ci = Self::idx(cx, cz);
+            let ci = self.idx(cx, cz);
             if closed[ci] {
                 continue;
             }
@@ -238,12 +250,12 @@ impl NavGrid {
             for (dx, dz, cost) in &neighbors {
                 let nx = cx as i32 + dx;
                 let nz = cz as i32 + dz;
-                if nx < 0 || nx >= GRID_SIZE as i32 || nz < 0 || nz >= GRID_SIZE as i32 {
+                if nx < 0 || nx >= self.grid_size as i32 || nz < 0 || nz >= self.grid_size as i32 {
                     continue;
                 }
                 let nx = nx as usize;
                 let nz = nz as usize;
-                let ni = Self::idx(nx, nz);
+                let ni = self.idx(nx, nz);
 
                 if closed[ni] || self.is_blocked(nx, nz) {
                     continue;
@@ -276,7 +288,7 @@ impl NavGrid {
         let mut cur = (ex, ez);
         while cur != (sx, sz) {
             path_grid.push(cur);
-            let ci = Self::idx(cur.0, cur.1);
+            let ci = self.idx(cur.0, cur.1);
             let prev = came_from[ci];
             if prev == (usize::MAX, usize::MAX) {
                 break;
@@ -285,8 +297,8 @@ impl NavGrid {
         }
         path_grid.reverse();
 
-        // Convert to world coords, skip first few close waypoints
-        path_grid.iter().map(|&(gx, gz)| Self::grid_to_world(gx, gz)).collect()
+        // Convert to world coords
+        path_grid.iter().map(|&(gx, gz)| self.grid_to_world(gx, gz)).collect()
     }
 }
 
@@ -335,33 +347,39 @@ fn setup_scene(
     mut game: ResMut<GameState>,
     mut nav_grid: ResMut<NavGrid>,
     mut tree_positions: ResMut<TreePositions>,
+    map_config: Res<MapConfig>,
 ) {
-    game.health = 100.0;
-    game.ammo = 100;
+    let map_half = map_config.map_half();
+    let tree_radius = map_config.trees.collision_radius;
+
+    game.health = map_config.player.health;
+    game.ammo = map_config.player.ammo;
     game.is_grounded = true;
 
-    // Ground (green grass)
+    // Ground
+    let gc = &map_config.ground.color;
     commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(MAP_HALF * 2.0, MAP_HALF * 2.0))),
+        Mesh3d(meshes.add(Plane3d::default().mesh().size(map_half * 2.0, map_half * 2.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.2, 0.6, 0.15),
+            base_color: Color::srgb(gc[0], gc[1], gc[2]),
             ..default()
         })),
         Transform::from_xyz(0.0, 0.0, 0.0),
     ));
 
     // Walls around the map
+    let wc = &map_config.walls.color;
     let wall_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.35, 0.35, 0.35),
+        base_color: Color::srgb(wc[0], wc[1], wc[2]),
         ..default()
     });
-    let wall_height = 4.0;
-    let wall_thickness = 1.0;
+    let wall_height = map_config.walls.height;
+    let wall_thickness = map_config.walls.thickness;
     let walls = [
-        (MAP_HALF * 2.0 + wall_thickness * 2.0, wall_height, wall_thickness, 0.0, wall_height / 2.0, MAP_HALF + wall_thickness / 2.0),
-        (MAP_HALF * 2.0 + wall_thickness * 2.0, wall_height, wall_thickness, 0.0, wall_height / 2.0, -(MAP_HALF + wall_thickness / 2.0)),
-        (wall_thickness, wall_height, MAP_HALF * 2.0, MAP_HALF + wall_thickness / 2.0, wall_height / 2.0, 0.0),
-        (wall_thickness, wall_height, MAP_HALF * 2.0, -(MAP_HALF + wall_thickness / 2.0), wall_height / 2.0, 0.0),
+        (map_half * 2.0 + wall_thickness * 2.0, wall_height, wall_thickness, 0.0, wall_height / 2.0, map_half + wall_thickness / 2.0),
+        (map_half * 2.0 + wall_thickness * 2.0, wall_height, wall_thickness, 0.0, wall_height / 2.0, -(map_half + wall_thickness / 2.0)),
+        (wall_thickness, wall_height, map_half * 2.0, map_half + wall_thickness / 2.0, wall_height / 2.0, 0.0),
+        (wall_thickness, wall_height, map_half * 2.0, -(map_half + wall_thickness / 2.0), wall_height / 2.0, 0.0),
     ];
     for (w, h, d, x, y, z) in walls {
         commands.spawn((
@@ -372,60 +390,74 @@ fn setup_scene(
         ));
     }
 
-    // Randomly placed trees (dense)
-    let mut rng = rand::thread_rng();
-    let trunk_mesh = meshes.add(Cuboid::new(0.8, 4.0, 0.8));
-    let canopy_mesh = meshes.add(Cuboid::new(2.5, 2.5, 2.5));
+    // Trees
+    let ts = &map_config.trees.trunk.size;
+    let tc = &map_config.trees.trunk.color;
+    let cs = &map_config.trees.canopy.size;
+    let cc = &map_config.trees.canopy.color;
+    let trunk_mesh = meshes.add(Cuboid::new(ts[0], ts[1], ts[2]));
+    let canopy_mesh = meshes.add(Cuboid::new(cs[0], cs[1], cs[2]));
     let trunk_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.45, 0.25, 0.1),
+        base_color: Color::srgb(tc[0], tc[1], tc[2]),
         ..default()
     });
     let canopy_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.1, 0.45, 0.1),
+        base_color: Color::srgb(cc[0], cc[1], cc[2]),
         ..default()
     });
-    let tree_count = 50;
-    let mut trees: Vec<Vec2> = Vec::new();
-    let mut attempts = 0;
-    while trees.len() < tree_count && attempts < 500 {
-        attempts += 1;
-        let x = rng.gen_range(-(MAP_HALF - 2.0)..(MAP_HALF - 2.0));
-        let z = rng.gen_range(-(MAP_HALF - 2.0)..(MAP_HALF - 2.0));
-        // Keep a clear area around the player spawn
-        if x.abs() < 6.0 && z.abs() < 6.0 {
-            continue;
+
+    let trees: Vec<Vec2> = match &map_config.trees.placement {
+        TreePlacement::Random { count, min_spacing, clear_radius } => {
+            let mut rng = rand::thread_rng();
+            let mut placed = Vec::new();
+            let mut attempts = 0;
+            while placed.len() < *count && attempts < 500 {
+                attempts += 1;
+                let x = rng.gen_range(-(map_half - 2.0)..(map_half - 2.0));
+                let z = rng.gen_range(-(map_half - 2.0)..(map_half - 2.0));
+                if x.abs() < *clear_radius && z.abs() < *clear_radius {
+                    continue;
+                }
+                let too_close = placed.iter().any(|t: &Vec2| t.distance(Vec2::new(x, z)) < *min_spacing);
+                if too_close {
+                    continue;
+                }
+                placed.push(Vec2::new(x, z));
+            }
+            placed
         }
-        // Minimum spacing between trees
-        let too_close = trees.iter().any(|t| t.distance(Vec2::new(x, z)) < 3.5);
-        if too_close {
-            continue;
+        TreePlacement::Fixed(positions) => {
+            positions.iter().map(|p| Vec2::new(p[0], p[1])).collect()
         }
-        trees.push(Vec2::new(x, z));
-    }
+    };
+
+    let trunk_y = ts[1] / 2.0;
+    let canopy_y = ts[1] + cs[1] / 2.0;
 
     for &pos in &trees {
         commands.spawn((
             Mesh3d(trunk_mesh.clone()),
             MeshMaterial3d(trunk_material.clone()),
-            Transform::from_xyz(pos.x, 2.0, pos.y),
+            Transform::from_xyz(pos.x, trunk_y, pos.y),
         ));
         commands.spawn((
             Mesh3d(canopy_mesh.clone()),
             MeshMaterial3d(canopy_material.clone()),
-            Transform::from_xyz(pos.x, 5.0, pos.y),
+            Transform::from_xyz(pos.x, canopy_y, pos.y),
         ));
 
         // Mark nav grid cells as blocked around this tree
-        let radius_cells = (TREE_RADIUS / GRID_CELL).ceil() as i32 + 1;
-        if let Some((cx, cz)) = NavGrid::world_to_grid(pos.x, pos.y) {
+        let radius_cells = (tree_radius / GRID_CELL).ceil() as i32 + 1;
+        if let Some((cx, cz)) = nav_grid.world_to_grid(pos.x, pos.y) {
             for dx in -radius_cells..=radius_cells {
                 for dz in -radius_cells..=radius_cells {
                     let nx = cx as i32 + dx;
                     let nz = cz as i32 + dz;
-                    if nx >= 0 && nx < GRID_SIZE as i32 && nz >= 0 && nz < GRID_SIZE as i32 {
-                        let world = NavGrid::grid_to_world(nx as usize, nz as usize);
-                        if world.distance(pos) < TREE_RADIUS {
-                            nav_grid.blocked[NavGrid::idx(nx as usize, nz as usize)] = true;
+                    if nx >= 0 && nx < nav_grid.grid_size as i32 && nz >= 0 && nz < nav_grid.grid_size as i32 {
+                        let world = nav_grid.grid_to_world(nx as usize, nz as usize);
+                        if world.distance(pos) < tree_radius {
+                            let idx = nav_grid.idx(nx as usize, nz as usize);
+                            nav_grid.blocked[idx] = true;
                         }
                     }
                 }
@@ -436,26 +468,28 @@ fn setup_scene(
     tree_positions.0 = trees;
 
     // Directional light (sun)
+    let sa = &map_config.lighting.sun_angle;
     commands.spawn((
         DirectionalLight {
-            illuminance: 10000.0,
+            illuminance: map_config.lighting.sun_illuminance,
             shadows_enabled: true,
             ..default()
         },
-        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.8, 0.4, 0.0)),
+        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, sa[0], sa[1], sa[2])),
     ));
 
     // Ambient light
     commands.insert_resource(AmbientLight {
         color: Color::WHITE,
-        brightness: 300.0,
+        brightness: map_config.lighting.ambient_brightness,
     });
 
     // Player body
+    let ps = &map_config.player.spawn;
     let player_entity = commands
         .spawn((
             Player,
-            Transform::from_xyz(0.0, 0.9, 0.0),
+            Transform::from_xyz(ps[0], ps[1], ps[2]),
             Visibility::default(),
         ))
         .id();
@@ -678,13 +712,12 @@ fn grab_cursor(mut windows: Query<&mut Window, With<PrimaryWindow>>) {
 
 // ── Collision helpers ────────────────────────────────────────────────────────
 
-fn collides_with_tree(pos: Vec2, radius: f32, trees: &[Vec2]) -> Option<Vec2> {
+fn collides_with_tree(pos: Vec2, radius: f32, trees: &[Vec2], tree_radius: f32) -> Option<Vec2> {
     for &tree in trees {
         let diff = pos - tree;
         let dist = diff.length();
-        let min_dist = radius + TREE_RADIUS;
+        let min_dist = radius + tree_radius;
         if dist < min_dist && dist > 0.001 {
-            // Push out direction
             return Some(diff.normalize() * (min_dist - dist));
         }
     }
@@ -724,6 +757,7 @@ fn player_move(
     mut game: ResMut<GameState>,
     mut player_q: Query<&mut Transform, With<Player>>,
     tree_positions: Res<TreePositions>,
+    map_config: Res<MapConfig>,
 ) {
     if game.is_dead {
         return;
@@ -733,7 +767,7 @@ fn player_move(
     };
 
     let sprinting = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
-    let speed = if sprinting { 9.0 } else { 5.0 };
+    let speed = if sprinting { map_config.player.sprint_speed } else { map_config.player.speed };
     let forward = transform.forward();
     let right = transform.right();
     let mut velocity = Vec3::ZERO;
@@ -758,14 +792,14 @@ fn player_move(
 
         // Tree collision - push player out
         let player_pos = Vec2::new(transform.translation.x, transform.translation.z);
-        if let Some(push) = collides_with_tree(player_pos, PLAYER_RADIUS, &tree_positions.0) {
+        if let Some(push) = collides_with_tree(player_pos, PLAYER_RADIUS, &tree_positions.0, map_config.trees.collision_radius) {
             transform.translation.x += push.x;
             transform.translation.z += push.y;
         }
     }
 
     // Clamp to map bounds
-    let map_bound = MAP_HALF - 0.5;
+    let map_bound = map_config.map_half() - 0.5;
     transform.translation.x = transform.translation.x.clamp(-map_bound, map_bound);
     transform.translation.z = transform.translation.z.clamp(-map_bound, map_bound);
 
@@ -886,6 +920,7 @@ fn spawn_zombies(
     game: Res<GameState>,
     player_q: Query<&Transform, With<Player>>,
     time: Res<Time>,
+    map_config: Res<MapConfig>,
 ) {
     if game.is_dead { return; }
     spawn_timer.0.tick(time.delta());
@@ -893,6 +928,7 @@ fn spawn_zombies(
 
     let Ok(player_transform) = player_q.get_single() else { return };
     let mut rng = rand::thread_rng();
+    let map_half = map_config.map_half();
 
     let count = 1 + (game.kills / 10).min(4) as usize;
     for _ in 0..count {
@@ -901,8 +937,8 @@ fn spawn_zombies(
         let offset = Vec3::new(angle.cos() * dist, 0.0, angle.sin() * dist);
         let spawn_pos = player_transform.translation + offset;
         // Clamp spawn inside map
-        let x = spawn_pos.x.clamp(-MAP_HALF + 1.0, MAP_HALF - 1.0);
-        let z = spawn_pos.z.clamp(-MAP_HALF + 1.0, MAP_HALF - 1.0);
+        let x = spawn_pos.x.clamp(-map_half + 1.0, map_half - 1.0);
+        let z = spawn_pos.z.clamp(-map_half + 1.0, map_half - 1.0);
 
         commands.spawn((
             Zombie {
@@ -928,13 +964,15 @@ fn zombie_ai(
     game: Res<GameState>,
     time: Res<Time>,
     nav_grid: Res<NavGrid>,
+    map_config: Res<MapConfig>,
 ) {
     if game.is_dead { return; }
     let Ok(player_transform) = player_q.get_single() else { return };
     let mut rng = rand::thread_rng();
 
-    let speed = game.zombie_speed();
-    let move_chance = game.zombie_move_chance();
+    let speed = game.zombie_speed(&map_config);
+    let move_chance = game.zombie_move_chance(&map_config);
+    let map_half = map_config.map_half();
     let player_pos = Vec2::new(player_transform.translation.x, player_transform.translation.z);
 
     for (mut transform, mut zombie) in zombie_q.iter_mut() {
@@ -988,8 +1026,8 @@ fn zombie_ai(
                 transform.translation.y = 0.9;
 
                 // Clamp to map bounds
-                transform.translation.x = transform.translation.x.clamp(-MAP_HALF, MAP_HALF);
-                transform.translation.z = transform.translation.z.clamp(-MAP_HALF, MAP_HALF);
+                transform.translation.x = transform.translation.x.clamp(-map_half, map_half);
+                transform.translation.z = transform.translation.z.clamp(-map_half, map_half);
 
                 // Face direction of travel
                 let dir3 = Vec3::new(dir.x, 0.0, dir.y);

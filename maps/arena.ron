@@ -1,0 +1,32 @@
+(
+    name: "Arena",
+    map: (size: 40.0),
+    ground: (color: (0.3, 0.3, 0.25)),
+    walls: (height: 5.0, thickness: 1.5, color: (0.5, 0.4, 0.3)),
+    trees: (
+        placement: Fixed([
+            (-12.0, -12.0),
+            ( 12.0, -12.0),
+            (-12.0,  12.0),
+            ( 12.0,  12.0),
+            (  0.0, -15.0),
+            (  0.0,  15.0),
+            (-15.0,   0.0),
+            ( 15.0,   0.0),
+        ]),
+        trunk: (size: (1.0, 5.0, 1.0), color: (0.5, 0.3, 0.1)),
+        canopy: (size: (3.0, 3.0, 3.0), color: (0.15, 0.5, 0.15)),
+        collision_radius: 1.4,
+    ),
+    lighting: (sun_illuminance: 12000.0, sun_angle: (-1.0, 0.3, 0.0), ambient_brightness: 400.0),
+    player: (spawn: (0.0, 0.9, 0.0), health: 100.0, ammo: 150, speed: 6.0, sprint_speed: 11.0),
+    zombies: (
+        spawn_interval: 2.0,
+        base_speed: 5.5,
+        speed_per_kill: 0.1,
+        max_speed_bonus: 6.0,
+        base_move_chance: 0.75,
+        move_chance_per_kill: 0.008,
+        max_move_chance_bonus: 0.2,
+    ),
+)

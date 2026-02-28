@@ -27,6 +27,7 @@ fn main() {
         .insert_resource(NavGrid::default())
         .insert_resource(TreePositions::default())
         .add_systems(Startup, (setup_scene, setup_ui, grab_cursor))
+        .add_systems(Update, (toggle_pause, pause_button_interaction))
         .add_systems(
             Update,
             (
@@ -41,7 +42,8 @@ fn main() {
                 update_health_ui,
                 health_regen,
                 damage_flash,
-            ),
+            )
+                .run_if(game_active),
         )
         .run();
 }
@@ -95,6 +97,15 @@ struct DamageFlash {
 #[derive(Component)]
 struct DamageOverlay;
 
+#[derive(Component)]
+struct PauseMenu;
+
+#[derive(Component)]
+enum PauseButton {
+    Resume,
+    Exit,
+}
+
 // ── Resources ───────────────────────────────────────────────────────────────
 
 #[derive(Resource, Default)]
@@ -106,6 +117,7 @@ struct GameState {
     last_hit_time: f32,
     hit_count_in_window: u32,
     is_dead: bool,
+    is_paused: bool,
     vertical_velocity: f32,
     is_grounded: bool,
 }
@@ -118,6 +130,10 @@ impl GameState {
     fn zombie_move_chance(&self) -> f32 {
         0.6 + (self.kills as f32 * 0.005).min(0.35)
     }
+}
+
+fn game_active(game: Res<GameState>) -> bool {
+    !game.is_paused
 }
 
 #[derive(Resource)]
@@ -572,6 +588,85 @@ fn setup_ui(mut commands: Commands) {
         BackgroundColor(Color::srgba(1.0, 0.0, 0.0, 0.0)),
         ZIndex(100),
     ));
+
+    // Pause menu (hidden by default)
+    commands
+        .spawn((
+            PauseMenu,
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                position_type: PositionType::Absolute,
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(20.0),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.7)),
+            ZIndex(200),
+            Visibility::Hidden,
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                Text::new("PAUSED"),
+                TextFont {
+                    font_size: 64.0,
+                    ..default()
+                },
+                TextColor(Color::WHITE),
+            ));
+
+            // Resume button
+            parent
+                .spawn((
+                    PauseButton::Resume,
+                    Button,
+                    Node {
+                        width: Val::Px(200.0),
+                        height: Val::Px(50.0),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.2, 0.6, 0.2)),
+                ))
+                .with_children(|p| {
+                    p.spawn((
+                        Text::new("Resume"),
+                        TextFont {
+                            font_size: 28.0,
+                            ..default()
+                        },
+                        TextColor(Color::WHITE),
+                    ));
+                });
+
+            // Exit button
+            parent
+                .spawn((
+                    PauseButton::Exit,
+                    Button,
+                    Node {
+                        width: Val::Px(200.0),
+                        height: Val::Px(50.0),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.6, 0.2, 0.2)),
+                ))
+                .with_children(|p| {
+                    p.spawn((
+                        Text::new("Exit"),
+                        TextFont {
+                            font_size: 28.0,
+                            ..default()
+                        },
+                        TextColor(Color::WHITE),
+                    ));
+                });
+        });
 }
 
 fn grab_cursor(mut windows: Query<&mut Window, With<PrimaryWindow>>) {
@@ -977,6 +1072,89 @@ fn damage_flash(
             if flash.timer.finished() {
                 bg.0 = Color::srgba(1.0, 0.0, 0.0, 0.0);
                 commands.entity(entity).remove::<DamageFlash>();
+            }
+        }
+    }
+}
+
+// ── Pause ─────────────────────────────────────────────────────────────────────
+
+fn toggle_pause(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut game: ResMut<GameState>,
+    mut pause_menu_q: Query<&mut Visibility, With<PauseMenu>>,
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+) {
+    if !keys.just_pressed(KeyCode::Escape) {
+        return;
+    }
+    if game.is_dead {
+        return;
+    }
+    game.is_paused = !game.is_paused;
+
+    if let Ok(mut vis) = pause_menu_q.get_single_mut() {
+        *vis = if game.is_paused {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+
+    if let Ok(mut window) = windows.get_single_mut() {
+        if game.is_paused {
+            window.cursor_options.grab_mode = CursorGrabMode::None;
+            window.cursor_options.visible = true;
+        } else {
+            window.cursor_options.grab_mode = CursorGrabMode::Locked;
+            window.cursor_options.visible = false;
+        }
+    }
+}
+
+fn pause_button_interaction(
+    mut interaction_q: Query<
+        (&Interaction, &PauseButton, &mut BackgroundColor),
+        (Changed<Interaction>, With<Button>),
+    >,
+    mut game: ResMut<GameState>,
+    mut pause_menu_q: Query<&mut Visibility, With<PauseMenu>>,
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+    mut exit: EventWriter<AppExit>,
+) {
+    for (interaction, button, mut bg) in interaction_q.iter_mut() {
+        let base_color = match button {
+            PauseButton::Resume => Color::srgb(0.2, 0.6, 0.2),
+            PauseButton::Exit => Color::srgb(0.6, 0.2, 0.2),
+        };
+        let hover_color = match button {
+            PauseButton::Resume => Color::srgb(0.3, 0.8, 0.3),
+            PauseButton::Exit => Color::srgb(0.8, 0.3, 0.3),
+        };
+
+        match *interaction {
+            Interaction::Pressed => {
+                match button {
+                    PauseButton::Resume => {
+                        game.is_paused = false;
+                        if let Ok(mut vis) = pause_menu_q.get_single_mut() {
+                            *vis = Visibility::Hidden;
+                        }
+                        if let Ok(mut window) = windows.get_single_mut() {
+                            window.cursor_options.grab_mode = CursorGrabMode::Locked;
+                            window.cursor_options.visible = false;
+                        }
+                    }
+                    PauseButton::Exit => {
+                        exit.send(AppExit::Success);
+                    }
+                }
+            }
+            Interaction::Hovered => {
+                bg.0 = hover_color;
+            }
+            Interaction::None => {
+                bg.0 = base_color;
             }
         }
     }

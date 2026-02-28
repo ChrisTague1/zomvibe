@@ -10,18 +10,64 @@ use std::cmp::Ordering;
 mod map;
 use map::{MapConfig, TreePlacement, load_map_config, default_map_config};
 
+// ── App State ────────────────────────────────────────────────────────────────
+
+#[derive(States, Debug, Clone, PartialEq, Eq, Hash, Default)]
+enum AppState {
+    #[default]
+    MapSelect,
+    Playing,
+}
+
+struct MapOption {
+    name: String,
+    path: Option<String>,
+}
+
+#[derive(Resource)]
+struct AvailableMaps(Vec<MapOption>);
+
+#[derive(Component)]
+struct MapSelectUI;
+
+#[derive(Component)]
+struct MapButton(usize);
+
+#[derive(Component)]
+struct MapExitButton;
+
 const GRID_CELL: f32 = 1.0;
 const PLAYER_RADIUS: f32 = 0.4;
 
-fn main() {
-    let map_config = match std::env::args().nth(1) {
-        Some(path) => load_map_config(&path),
-        None => default_map_config(),
-    };
+fn scan_maps() -> Vec<MapOption> {
+    let mut maps = Vec::new();
+    if let Ok(entries) = std::fs::read_dir("maps") {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("ron") {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    if let Ok(config) = ron::from_str::<MapConfig>(&content) {
+                        maps.push(MapOption {
+                            name: config.name,
+                            path: Some(path.to_string_lossy().to_string()),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    maps.sort_by(|a, b| a.name.cmp(&b.name));
+    if maps.is_empty() {
+        maps.push(MapOption {
+            name: "Forest (Default)".to_string(),
+            path: None,
+        });
+    }
+    maps
+}
 
-    let spawn_interval = map_config.zombies.spawn_interval;
-    let map_half = map_config.map_half();
-    let grid_size = (map_half * 2.0 / GRID_CELL) as usize;
+fn main() {
+    let maps = scan_maps();
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -31,15 +77,24 @@ fn main() {
             }),
             ..default()
         }))
-        .insert_resource(map_config)
+        .init_state::<AppState>()
+        .insert_resource(AvailableMaps(maps))
         .insert_resource(GameState::default())
-        .insert_resource(ZombieSpawnTimer(Timer::from_seconds(spawn_interval, TimerMode::Repeating)))
-        .insert_resource(NavGrid::new(map_half, grid_size))
         .insert_resource(TreePositions::default())
-        .insert_resource(FloorSurfaces::default())
-        .insert_resource(HouseWalls::default())
-        .add_systems(Startup, (setup_scene, setup_ui, grab_cursor))
-        .add_systems(Update, (toggle_pause, pause_button_interaction))
+        .add_systems(OnEnter(AppState::MapSelect), setup_map_select)
+        .add_systems(OnEnter(AppState::Playing), (snapshot_entities, setup_scene, setup_ui, grab_cursor).chain())
+        .add_systems(OnExit(AppState::MapSelect), cleanup_map_select)
+        .add_systems(OnExit(AppState::Playing), cleanup_playing)
+        .add_systems(
+            Update,
+            (map_select_interaction, map_exit_interaction)
+                .run_if(in_state(AppState::MapSelect)),
+        )
+        .add_systems(
+            Update,
+            (toggle_pause, pause_button_interaction)
+                .run_if(in_state(AppState::Playing)),
+        )
         .add_systems(
             Update,
             (
@@ -56,7 +111,7 @@ fn main() {
                 health_regen,
                 damage_flash,
             )
-                .run_if(game_active),
+                .run_if(in_state(AppState::Playing).and(game_active)),
         )
         .run();
 }
@@ -366,6 +421,202 @@ impl PartialOrd for AStarNode {
     }
 }
 
+// ── Map Selection ────────────────────────────────────────────────────────────
+
+fn setup_map_select(mut commands: Commands, maps: Res<AvailableMaps>) {
+    // UI camera for the menu screen (despawned on state exit)
+    commands.spawn((MapSelectUI, Camera2d));
+
+    commands
+        .spawn((
+            MapSelectUI,
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                position_type: PositionType::Absolute,
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(20.0),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.9)),
+            ZIndex(300),
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                Text::new("ZOMVIBE"),
+                TextFont {
+                    font_size: 80.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.8, 0.1, 0.1)),
+            ));
+
+            parent.spawn((
+                Text::new("Select Map"),
+                TextFont {
+                    font_size: 32.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.8, 0.8, 0.8)),
+            ));
+
+            for (i, map) in maps.0.iter().enumerate() {
+                parent
+                    .spawn((
+                        MapButton(i),
+                        Button,
+                        Node {
+                            width: Val::Px(250.0),
+                            height: Val::Px(55.0),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgb(0.2, 0.6, 0.2)),
+                    ))
+                    .with_children(|p| {
+                        p.spawn((
+                            Text::new(map.name.clone()),
+                            TextFont {
+                                font_size: 28.0,
+                                ..default()
+                            },
+                            TextColor(Color::WHITE),
+                        ));
+                    });
+            }
+
+            // Exit game button
+            parent
+                .spawn((
+                    MapExitButton,
+                    Button,
+                    Node {
+                        width: Val::Px(250.0),
+                        height: Val::Px(55.0),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        margin: UiRect::top(Val::Px(20.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.6, 0.2, 0.2)),
+                ))
+                .with_children(|p| {
+                    p.spawn((
+                        Text::new("Exit Game"),
+                        TextFont {
+                            font_size: 28.0,
+                            ..default()
+                        },
+                        TextColor(Color::WHITE),
+                    ));
+                });
+        });
+}
+
+fn map_select_interaction(
+    mut interaction_q: Query<
+        (&Interaction, &MapButton, &mut BackgroundColor),
+        (Changed<Interaction>, With<Button>, Without<MapExitButton>),
+    >,
+    maps: Res<AvailableMaps>,
+    mut commands: Commands,
+    mut next_state: ResMut<NextState<AppState>>,
+) {
+    for (interaction, button, mut bg) in interaction_q.iter_mut() {
+        match *interaction {
+            Interaction::Pressed => {
+                let map_option = &maps.0[button.0];
+                let config = match &map_option.path {
+                    Some(path) => load_map_config(path),
+                    None => default_map_config(),
+                };
+                commands.insert_resource(config);
+                next_state.set(AppState::Playing);
+            }
+            Interaction::Hovered => {
+                bg.0 = Color::srgb(0.3, 0.8, 0.3);
+            }
+            Interaction::None => {
+                bg.0 = Color::srgb(0.2, 0.6, 0.2);
+            }
+        }
+    }
+}
+
+fn map_exit_interaction(
+    mut interaction_q: Query<
+        (&Interaction, &mut BackgroundColor),
+        (Changed<Interaction>, With<MapExitButton>),
+    >,
+    mut exit: EventWriter<AppExit>,
+) {
+    for (interaction, mut bg) in interaction_q.iter_mut() {
+        match *interaction {
+            Interaction::Pressed => {
+                exit.send(AppExit::Success);
+            }
+            Interaction::Hovered => {
+                bg.0 = Color::srgb(0.8, 0.3, 0.3);
+            }
+            Interaction::None => {
+                bg.0 = Color::srgb(0.6, 0.2, 0.2);
+            }
+        }
+    }
+}
+
+fn cleanup_map_select(
+    mut commands: Commands,
+    query: Query<Entity, With<MapSelectUI>>,
+) {
+    for entity in query.iter() {
+        commands.entity(entity).despawn_recursive();
+    }
+}
+
+/// Stores entity IDs that existed before entering Playing state.
+#[derive(Resource)]
+struct PrePlayingEntities(Vec<Entity>);
+
+fn snapshot_entities(
+    entities: Query<Entity>,
+    mut commands: Commands,
+) {
+    let ids: Vec<Entity> = entities.iter().collect();
+    commands.insert_resource(PrePlayingEntities(ids));
+}
+
+fn cleanup_playing(
+    mut commands: Commands,
+    entities: Query<Entity>,
+    pre: Res<PrePlayingEntities>,
+    mut game: ResMut<GameState>,
+    mut tree_positions: ResMut<TreePositions>,
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+) {
+    for entity in entities.iter() {
+        if !pre.0.contains(&entity) {
+            commands.entity(entity).try_despawn_recursive();
+        }
+    }
+    *game = GameState::default();
+    tree_positions.0.clear();
+    // Unlock cursor for menu
+    if let Ok(mut window) = windows.get_single_mut() {
+        window.cursor_options.grab_mode = CursorGrabMode::None;
+        window.cursor_options.visible = true;
+    }
+    commands.remove_resource::<PrePlayingEntities>();
+    commands.remove_resource::<NavGrid>();
+    commands.remove_resource::<ZombieSpawnTimer>();
+    commands.remove_resource::<FloorSurfaces>();
+    commands.remove_resource::<HouseWalls>();
+    commands.remove_resource::<MapConfig>();
+}
+
 // ── Setup ────────────────────────────────────────────────────────────────────
 
 fn setup_scene(
@@ -373,13 +624,14 @@ fn setup_scene(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut game: ResMut<GameState>,
-    mut nav_grid: ResMut<NavGrid>,
     mut tree_positions: ResMut<TreePositions>,
     map_config: Res<MapConfig>,
-    mut floor_surfaces: ResMut<FloorSurfaces>,
-    mut house_walls: ResMut<HouseWalls>,
 ) {
     let map_half = map_config.map_half();
+    let grid_size = (map_half * 2.0 / GRID_CELL) as usize;
+    let mut nav_grid = NavGrid::new(map_half, grid_size);
+    let mut floor_surfaces = FloorSurfaces::default();
+    let mut house_walls = HouseWalls::default();
     let tree_radius = map_config.trees.collision_radius;
 
     game.health = map_config.player.health;
@@ -499,7 +751,7 @@ fn setup_scene(
     tree_positions.0 = trees;
 
     // Spawn house
-    spawn_house(&mut commands, &mut meshes, &mut materials, &mut nav_grid, &mut floor_surfaces, &mut house_walls);
+    spawn_house(&mut commands, &mut meshes, &mut materials, &mut nav_grid, &mut floor_surfaces.0, &mut house_walls.0);
 
     // Directional light (sun)
     let sa = &map_config.lighting.sun_angle;
@@ -562,6 +814,13 @@ fn setup_scene(
             Transform::from_xyz(0.25, -0.25, -0.5),
         ))
         .set_parent(camera_anchor);
+
+    // Insert resources created locally
+    let spawn_interval = map_config.zombies.spawn_interval;
+    commands.insert_resource(ZombieSpawnTimer(Timer::from_seconds(spawn_interval, TimerMode::Repeating)));
+    commands.insert_resource(nav_grid);
+    commands.insert_resource(floor_surfaces);
+    commands.insert_resource(house_walls);
 }
 
 fn setup_ui(mut commands: Commands) {
@@ -790,9 +1049,9 @@ fn spawn_house(
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
-    nav_grid: &mut ResMut<NavGrid>,
-    floor_surfaces: &mut ResMut<FloorSurfaces>,
-    house_walls: &mut ResMut<HouseWalls>,
+    nav_grid: &mut NavGrid,
+    floor_surfaces: &mut Vec<FloorRect>,
+    house_walls: &mut Vec<WallRect>,
 ) {
     let wall_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.6, 0.55, 0.45),
@@ -932,16 +1191,16 @@ fn spawn_house(
 
     // ── Floor surfaces for collision ──
     // Second floor piece 1
-    floor_surfaces.0.push(FloorRect { min_x: -5.0, max_x: 5.0, min_z: -5.0, max_z: 2.5, y: 3.0 });
+    floor_surfaces.push(FloorRect { min_x: -5.0, max_x: 5.0, min_z: -5.0, max_z: 2.5, y: 3.0 });
     // Second floor piece 2
-    floor_surfaces.0.push(FloorRect { min_x: -2.5, max_x: 5.0, min_z: 2.5, max_z: 5.0, y: 3.0 });
+    floor_surfaces.push(FloorRect { min_x: -2.5, max_x: 5.0, min_z: 2.5, max_z: 5.0, y: 3.0 });
     // Balcony
-    floor_surfaces.0.push(FloorRect { min_x: 5.0, max_x: 8.0, min_z: -3.0, max_z: 3.0, y: 3.0 });
+    floor_surfaces.push(FloorRect { min_x: 5.0, max_x: 8.0, min_z: -3.0, max_z: 3.0, y: 3.0 });
     // Stair steps
     for i in 0..8u32 {
         let step_y = (i + 1) as f32 * 0.375;
         let step_z_center = 4.55 - i as f32 * 0.3;
-        floor_surfaces.0.push(FloorRect {
+        floor_surfaces.push(FloorRect {
             min_x: -4.7,
             max_x: -2.2,
             min_z: step_z_center - 0.15,
@@ -952,21 +1211,21 @@ fn spawn_house(
 
     // ── Wall collision rects ──
     // Ground floor walls (y: 0 to 3)
-    house_walls.0.push(WallRect { min_x: -5.15, max_x: 5.15, min_z: -5.15, max_z: -4.85, min_y: 0.0, max_y: 3.0 }); // North
-    house_walls.0.push(WallRect { min_x: -5.15, max_x: -1.5, min_z: 4.85, max_z: 5.15, min_y: 0.0, max_y: 3.0 }); // South left
-    house_walls.0.push(WallRect { min_x: 1.5, max_x: 5.15, min_z: 4.85, max_z: 5.15, min_y: 0.0, max_y: 3.0 }); // South right
-    house_walls.0.push(WallRect { min_x: 4.85, max_x: 5.15, min_z: -5.15, max_z: 5.15, min_y: 0.0, max_y: 3.0 }); // East
-    house_walls.0.push(WallRect { min_x: -5.15, max_x: -4.85, min_z: -5.15, max_z: 5.15, min_y: 0.0, max_y: 3.0 }); // West
+    house_walls.push(WallRect { min_x: -5.15, max_x: 5.15, min_z: -5.15, max_z: -4.85, min_y: 0.0, max_y: 3.0 }); // North
+    house_walls.push(WallRect { min_x: -5.15, max_x: -1.5, min_z: 4.85, max_z: 5.15, min_y: 0.0, max_y: 3.0 }); // South left
+    house_walls.push(WallRect { min_x: 1.5, max_x: 5.15, min_z: 4.85, max_z: 5.15, min_y: 0.0, max_y: 3.0 }); // South right
+    house_walls.push(WallRect { min_x: 4.85, max_x: 5.15, min_z: -5.15, max_z: 5.15, min_y: 0.0, max_y: 3.0 }); // East
+    house_walls.push(WallRect { min_x: -5.15, max_x: -4.85, min_z: -5.15, max_z: 5.15, min_y: 0.0, max_y: 3.0 }); // West
     // Second floor walls (y: 3 to 6)
-    house_walls.0.push(WallRect { min_x: -5.15, max_x: 5.15, min_z: -5.15, max_z: -4.85, min_y: 3.0, max_y: 6.0 }); // North
-    house_walls.0.push(WallRect { min_x: -5.15, max_x: 5.15, min_z: 4.85, max_z: 5.15, min_y: 3.0, max_y: 6.0 }); // South
-    house_walls.0.push(WallRect { min_x: -5.15, max_x: -4.85, min_z: -5.15, max_z: 5.15, min_y: 3.0, max_y: 6.0 }); // West
-    house_walls.0.push(WallRect { min_x: 4.85, max_x: 5.15, min_z: -5.15, max_z: -1.5, min_y: 3.0, max_y: 6.0 }); // East top
-    house_walls.0.push(WallRect { min_x: 4.85, max_x: 5.15, min_z: 1.5, max_z: 5.15, min_y: 3.0, max_y: 6.0 }); // East bottom
+    house_walls.push(WallRect { min_x: -5.15, max_x: 5.15, min_z: -5.15, max_z: -4.85, min_y: 3.0, max_y: 6.0 }); // North
+    house_walls.push(WallRect { min_x: -5.15, max_x: 5.15, min_z: 4.85, max_z: 5.15, min_y: 3.0, max_y: 6.0 }); // South
+    house_walls.push(WallRect { min_x: -5.15, max_x: -4.85, min_z: -5.15, max_z: 5.15, min_y: 3.0, max_y: 6.0 }); // West
+    house_walls.push(WallRect { min_x: 4.85, max_x: 5.15, min_z: -5.15, max_z: -1.5, min_y: 3.0, max_y: 6.0 }); // East top
+    house_walls.push(WallRect { min_x: 4.85, max_x: 5.15, min_z: 1.5, max_z: 5.15, min_y: 3.0, max_y: 6.0 }); // East bottom
     // Balcony railings (y: 3.1 to 4.1, jumpable)
-    house_walls.0.push(WallRect { min_x: 5.0, max_x: 8.05, min_z: -3.05, max_z: -2.95, min_y: 3.1, max_y: 4.1 }); // North
-    house_walls.0.push(WallRect { min_x: 5.0, max_x: 8.05, min_z: 2.95, max_z: 3.05, min_y: 3.1, max_y: 4.1 }); // South
-    house_walls.0.push(WallRect { min_x: 7.95, max_x: 8.05, min_z: -3.05, max_z: 3.05, min_y: 3.1, max_y: 4.1 }); // East
+    house_walls.push(WallRect { min_x: 5.0, max_x: 8.05, min_z: -3.05, max_z: -2.95, min_y: 3.1, max_y: 4.1 }); // North
+    house_walls.push(WallRect { min_x: 5.0, max_x: 8.05, min_z: 2.95, max_z: 3.05, min_y: 3.1, max_y: 4.1 }); // South
+    house_walls.push(WallRect { min_x: 7.95, max_x: 8.05, min_z: -3.05, max_z: 3.05, min_y: 3.1, max_y: 4.1 }); // East
 
     // ── Block nav grid ──
     for gx in 0..nav_grid.grid_size {
@@ -1453,9 +1712,6 @@ fn toggle_pause(
     if !keys.just_pressed(KeyCode::Escape) {
         return;
     }
-    if game.is_dead {
-        return;
-    }
     game.is_paused = !game.is_paused;
 
     if let Ok(mut vis) = pause_menu_q.get_single_mut() {
@@ -1485,7 +1741,7 @@ fn pause_button_interaction(
     mut game: ResMut<GameState>,
     mut pause_menu_q: Query<&mut Visibility, With<PauseMenu>>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
-    mut exit: EventWriter<AppExit>,
+    mut next_state: ResMut<NextState<AppState>>,
 ) {
     for (interaction, button, mut bg) in interaction_q.iter_mut() {
         let base_color = match button {
@@ -1511,7 +1767,8 @@ fn pause_button_interaction(
                         }
                     }
                     PauseButton::Exit => {
-                        exit.send(AppExit::Success);
+                        game.is_paused = false;
+                        next_state.set(AppState::MapSelect);
                     }
                 }
             }

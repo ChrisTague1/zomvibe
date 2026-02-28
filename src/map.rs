@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use serde::Deserialize;
 use std::fs;
 
-#[derive(Debug, Deserialize, Resource)]
+#[derive(Debug, Clone, Deserialize, Resource)]
 pub struct MapConfig {
     pub name: String,
     pub map: MapSettings,
@@ -14,24 +14,24 @@ pub struct MapConfig {
     pub zombies: ZombieSettings,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct MapSettings {
     pub size: f32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct GroundSettings {
     pub color: [f32; 3],
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct WallSettings {
     pub height: f32,
     pub thickness: f32,
     pub color: [f32; 3],
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct TreeSettings {
     pub placement: TreePlacement,
     pub trunk: TrunkSettings,
@@ -39,7 +39,7 @@ pub struct TreeSettings {
     pub collision_radius: f32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub enum TreePlacement {
     Random {
         count: usize,
@@ -49,26 +49,26 @@ pub enum TreePlacement {
     Fixed(Vec<[f32; 2]>),
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct TrunkSettings {
     pub size: [f32; 3],
     pub color: [f32; 3],
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct CanopySettings {
     pub size: [f32; 3],
     pub color: [f32; 3],
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct LightingSettings {
     pub sun_illuminance: f32,
     pub sun_angle: [f32; 3],
     pub ambient_brightness: f32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct PlayerSettings {
     pub spawn: [f32; 3],
     pub health: f32,
@@ -77,7 +77,7 @@ pub struct PlayerSettings {
     pub sprint_speed: f32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ZombieSettings {
     pub spawn_interval: f32,
     pub base_speed: f32,

@@ -155,3 +155,91 @@ pub fn default_map_config() -> MapConfig {
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_map_half() {
+        let config = default_map_config();
+        assert_eq!(config.map_half(), 40.0);
+    }
+
+    #[test]
+    fn test_map_half_custom_size() {
+        let mut config = default_map_config();
+        config.map.size = 100.0;
+        assert_eq!(config.map_half(), 50.0);
+    }
+
+    #[test]
+    fn test_default_map_config_name() {
+        let config = default_map_config();
+        assert_eq!(config.name, "Forest");
+    }
+
+    #[test]
+    fn test_default_map_config_player_settings() {
+        let config = default_map_config();
+        assert_eq!(config.player.health, 100.0);
+        assert_eq!(config.player.ammo, 100);
+        assert_eq!(config.player.speed, 5.0);
+        assert_eq!(config.player.sprint_speed, 9.0);
+    }
+
+    #[test]
+    fn test_default_map_config_zombie_settings() {
+        let config = default_map_config();
+        assert_eq!(config.zombies.spawn_interval, 3.0);
+        assert_eq!(config.zombies.base_speed, 4.5);
+        assert_eq!(config.zombies.base_move_chance, 0.6);
+    }
+
+    #[test]
+    fn test_default_map_config_has_structures() {
+        let config = default_map_config();
+        assert_eq!(config.structures.len(), 1);
+        assert!(matches!(config.structures[0].kind, StructureType::House));
+    }
+
+    #[test]
+    fn test_default_map_config_tree_placement_is_random() {
+        let config = default_map_config();
+        assert!(matches!(config.trees.placement, TreePlacement::Random { count: 50, .. }));
+    }
+
+    #[test]
+    fn test_load_map_config_from_ron() {
+        let ron_str = r#"(
+            name: "Test",
+            map: (size: 60.0),
+            ground: (color: (0.1, 0.2, 0.3)),
+            walls: (height: 3.0, thickness: 0.5, color: (0.4, 0.4, 0.4)),
+            trees: (
+                placement: Fixed([]),
+                trunk: (size: (0.5, 3.0, 0.5), color: (0.3, 0.2, 0.1)),
+                canopy: (size: (2.0, 2.0, 2.0), color: (0.1, 0.4, 0.1)),
+                collision_radius: 1.0,
+            ),
+            structures: [],
+            lighting: (sun_illuminance: 8000.0, sun_angle: (-0.5, 0.3, 0.0), ambient_brightness: 200.0),
+            player: (spawn: (0.0, 0.9, 5.0), health: 80.0, ammo: 50, speed: 4.0, sprint_speed: 8.0),
+            zombies: (spawn_interval: 2.0, base_speed: 3.0, speed_per_kill: 0.1, max_speed_bonus: 4.0, base_move_chance: 0.5, move_chance_per_kill: 0.01, max_move_chance_bonus: 0.3),
+        )"#;
+        let config: MapConfig = ron::from_str(ron_str).unwrap();
+        assert_eq!(config.name, "Test");
+        assert_eq!(config.map.size, 60.0);
+        assert_eq!(config.map_half(), 30.0);
+        assert_eq!(config.player.health, 80.0);
+        assert_eq!(config.player.ammo, 50);
+    }
+
+    #[test]
+    fn test_load_map_config_missing_file_panics() {
+        let result = std::panic::catch_unwind(|| {
+            load_map_config("nonexistent_file.ron");
+        });
+        assert!(result.is_err());
+    }
+}

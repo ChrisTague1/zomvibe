@@ -106,6 +106,8 @@ fn main() {
                 zombie_ai,
                 bullet_movement,
                 check_bullet_zombie_collision,
+                melee_attack,
+                melee_swing_animation,
                 zombie_attack_player,
                 update_health_ui,
                 health_regen,
@@ -158,6 +160,14 @@ struct AmmoText;
 struct ScoreText;
 
 #[derive(Component)]
+struct MeleeWeapon;
+
+#[derive(Component)]
+struct MeleeSwing {
+    timer: Timer,
+}
+
+#[derive(Component)]
 struct DamageFlash {
     timer: Timer,
 }
@@ -190,6 +200,7 @@ struct GameState {
     is_paused: bool,
     vertical_velocity: f32,
     is_grounded: bool,
+    melee_cooldown: f32,
 }
 
 impl GameState {
@@ -394,7 +405,7 @@ fn heuristic(ax: usize, az: usize, bx: usize, bz: usize) -> f32 {
     min * 1.414 + (max - min)
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct AStarNode {
     gx: usize,
     gz: usize,
@@ -820,6 +831,22 @@ fn setup_scene(
                 ..default()
             })),
             Transform::from_xyz(0.25, -0.25, -0.5),
+        ))
+        .set_parent(camera_anchor);
+
+    // Melee weapon (knife, offset to bottom-left of view, hidden by default)
+    commands
+        .spawn((
+            MeleeWeapon,
+            Mesh3d(meshes.add(Cuboid::new(0.04, 0.04, 0.35))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::srgb(0.6, 0.6, 0.65),
+                metallic: 0.9,
+                perceptual_roughness: 0.3,
+                ..default()
+            })),
+            Transform::from_xyz(-0.3, -0.35, -0.45),
+            Visibility::Hidden,
         ))
         .set_parent(camera_anchor);
 
@@ -1904,6 +1931,101 @@ fn check_bullet_zombie_collision(
     }
 }
 
+// ── Melee ─────────────────────────────────────────────────────────────────────
+
+fn melee_attack(
+    mut commands: Commands,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut game: ResMut<GameState>,
+    time: Res<Time>,
+    player_q: Query<&Transform, With<Player>>,
+    anchor_q: Query<&Transform, (With<CameraAnchor>, Without<Player>)>,
+    zombies: Query<(Entity, &Transform), With<Zombie>>,
+    mut kill_text: Query<&mut Text, (With<KillText>, Without<ScoreText>, Without<AmmoText>)>,
+    mut score_text: Query<&mut Text, (With<ScoreText>, Without<KillText>, Without<AmmoText>)>,
+    mut melee_q: Query<(Entity, &mut Visibility), With<MeleeWeapon>>,
+) {
+    // Tick cooldown
+    if game.melee_cooldown > 0.0 {
+        game.melee_cooldown -= time.delta_secs();
+    }
+
+    if game.is_dead || !keyboard.just_pressed(KeyCode::KeyV) {
+        return;
+    }
+    if game.melee_cooldown > 0.0 {
+        return;
+    }
+
+    game.melee_cooldown = 0.5;
+
+    // Show knife and start swing animation
+    if let Ok((entity, mut vis)) = melee_q.get_single_mut() {
+        *vis = Visibility::Visible;
+        commands.entity(entity).insert(MeleeSwing {
+            timer: Timer::from_seconds(0.3, TimerMode::Once),
+        });
+    }
+
+    let Ok(pt) = player_q.get_single() else { return };
+    let Ok(at) = anchor_q.get_single() else { return };
+
+    let combined = pt.rotation * at.rotation;
+    let direction = combined * Vec3::NEG_Z;
+    let player_pos = pt.translation + Vec3::new(0.0, 0.7, 0.0);
+
+    // Hit all zombies within melee range (2.5 units) and in front of the player
+    for (zombie_entity, zombie_transform) in zombies.iter() {
+        let to_zombie = zombie_transform.translation - player_pos;
+        let dist = to_zombie.length();
+        if dist > 2.5 {
+            continue;
+        }
+        // Check zombie is roughly in front of the player
+        let dot = direction.normalize().dot(to_zombie.normalize());
+        if dot < 0.3 {
+            continue;
+        }
+        commands.entity(zombie_entity).despawn();
+        game.kills += 1;
+        game.score += 150; // melee kills worth more
+        if let Ok(mut text) = kill_text.get_single_mut() {
+            **text = format!("Kills: {}", game.kills);
+        }
+        if let Ok(mut text) = score_text.get_single_mut() {
+            **text = format!("Score: {}", game.score);
+        }
+    }
+}
+
+fn melee_swing_animation(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut melee_q: Query<(Entity, &mut Transform, &mut MeleeSwing, &mut Visibility), With<MeleeWeapon>>,
+) {
+    for (entity, mut transform, mut swing, mut vis) in melee_q.iter_mut() {
+        swing.timer.tick(time.delta());
+        let progress = swing.timer.fraction();
+
+        // Swing arc: move knife from left to center-right
+        let swing_angle = std::f32::consts::FRAC_PI_4 * (1.0 - (progress * std::f32::consts::PI).sin());
+        transform.translation = Vec3::new(
+            -0.3 + progress * 0.4,
+            -0.35 + (progress * std::f32::consts::PI).sin() * 0.1,
+            -0.45,
+        );
+        transform.rotation = Quat::from_rotation_z(swing_angle);
+
+        if swing.timer.finished() {
+            // Reset position and hide
+            transform.translation = Vec3::new(-0.3, -0.35, -0.45);
+            transform.rotation = Quat::IDENTITY;
+            *vis = Visibility::Hidden;
+            commands.entity(entity).remove::<MeleeSwing>();
+        }
+    }
+}
+
 // ── Zombies ───────────────────────────────────────────────────────────────────
 
 fn spawn_zombies(
@@ -2203,5 +2325,308 @@ fn update_health_ui(
             let hp_frac = game.health / 100.0;
             color.0 = Color::srgb(1.0 - hp_frac, hp_frac, 0.1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::math::Vec2;
+
+    fn test_map_config() -> MapConfig {
+        map::default_map_config()
+    }
+
+    // ── GameState tests ──
+
+    #[test]
+    fn test_zombie_speed_no_kills() {
+        let game = GameState::default();
+        let config = test_map_config();
+        assert_eq!(game.zombie_speed(&config), config.zombies.base_speed);
+    }
+
+    #[test]
+    fn test_zombie_speed_with_kills() {
+        let mut game = GameState::default();
+        game.kills = 10;
+        let config = test_map_config();
+        let expected = config.zombies.base_speed + (10.0 * config.zombies.speed_per_kill).min(config.zombies.max_speed_bonus);
+        assert_eq!(game.zombie_speed(&config), expected);
+    }
+
+    #[test]
+    fn test_zombie_speed_capped_at_max_bonus() {
+        let mut game = GameState::default();
+        game.kills = 10000;
+        let config = test_map_config();
+        let expected = config.zombies.base_speed + config.zombies.max_speed_bonus;
+        assert_eq!(game.zombie_speed(&config), expected);
+    }
+
+    #[test]
+    fn test_zombie_move_chance_no_kills() {
+        let game = GameState::default();
+        let config = test_map_config();
+        assert_eq!(game.zombie_move_chance(&config), config.zombies.base_move_chance);
+    }
+
+    #[test]
+    fn test_zombie_move_chance_with_kills() {
+        let mut game = GameState::default();
+        game.kills = 20;
+        let config = test_map_config();
+        let expected = config.zombies.base_move_chance + (20.0 * config.zombies.move_chance_per_kill).min(config.zombies.max_move_chance_bonus);
+        assert_eq!(game.zombie_move_chance(&config), expected);
+    }
+
+    #[test]
+    fn test_zombie_move_chance_capped_at_max_bonus() {
+        let mut game = GameState::default();
+        game.kills = 100000;
+        let config = test_map_config();
+        let expected = config.zombies.base_move_chance + config.zombies.max_move_chance_bonus;
+        assert_eq!(game.zombie_move_chance(&config), expected);
+    }
+
+    // ── Heuristic tests ──
+
+    #[test]
+    fn test_heuristic_same_point() {
+        assert_eq!(heuristic(5, 5, 5, 5), 0.0);
+    }
+
+    #[test]
+    fn test_heuristic_cardinal_direction() {
+        // Moving 3 cells in one direction: cost = 3.0
+        assert_eq!(heuristic(0, 0, 3, 0), 3.0);
+        assert_eq!(heuristic(0, 0, 0, 3), 3.0);
+    }
+
+    #[test]
+    fn test_heuristic_diagonal() {
+        // Pure diagonal 3 cells: cost = 3 * 1.414
+        let h = heuristic(0, 0, 3, 3);
+        assert!((h - 3.0 * 1.414).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_heuristic_octile_mixed() {
+        // 2 diagonal + 1 cardinal = 2*1.414 + 1 = 3.828
+        let h = heuristic(0, 0, 3, 2);
+        assert!((h - (2.0 * 1.414 + 1.0)).abs() < 0.001);
+    }
+
+    // ── NavGrid tests ──
+
+    #[test]
+    fn test_nav_grid_new() {
+        let grid = NavGrid::new(40.0, 80);
+        assert_eq!(grid.blocked.len(), 80 * 80);
+        assert_eq!(grid.map_half, 40.0);
+        assert_eq!(grid.grid_size, 80);
+        assert!(grid.blocked.iter().all(|&b| !b));
+    }
+
+    #[test]
+    fn test_nav_grid_idx() {
+        let grid = NavGrid::new(40.0, 80);
+        assert_eq!(grid.idx(0, 0), 0);
+        assert_eq!(grid.idx(1, 0), 1);
+        assert_eq!(grid.idx(0, 1), 80);
+        assert_eq!(grid.idx(5, 3), 3 * 80 + 5);
+    }
+
+    #[test]
+    fn test_nav_grid_world_to_grid_center() {
+        let grid = NavGrid::new(40.0, 80);
+        // World (0, 0) -> grid center
+        let result = grid.world_to_grid(0.0, 0.0);
+        assert!(result.is_some());
+        let (gx, gz) = result.unwrap();
+        assert_eq!(gx, 40);
+        assert_eq!(gz, 40);
+    }
+
+    #[test]
+    fn test_nav_grid_world_to_grid_out_of_bounds() {
+        let grid = NavGrid::new(40.0, 80);
+        assert!(grid.world_to_grid(-50.0, 0.0).is_none());
+        assert!(grid.world_to_grid(0.0, 50.0).is_none());
+        assert!(grid.world_to_grid(100.0, 100.0).is_none());
+    }
+
+    #[test]
+    fn test_nav_grid_grid_to_world_roundtrip() {
+        let grid = NavGrid::new(40.0, 80);
+        let world = grid.grid_to_world(40, 40);
+        // Should be near center
+        assert!((world.x - 0.5).abs() < 0.01);
+        assert!((world.y - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_nav_grid_is_blocked() {
+        let mut grid = NavGrid::new(40.0, 80);
+        assert!(!grid.is_blocked(5, 5));
+        let idx = grid.idx(5, 5);
+        grid.blocked[idx] = true;
+        assert!(grid.is_blocked(5, 5));
+    }
+
+    #[test]
+    fn test_nav_grid_find_path_unblocked() {
+        let grid = NavGrid::new(10.0, 20);
+        let start = Vec2::new(0.0, 0.0);
+        let end = Vec2::new(5.0, 0.0);
+        let path = grid.find_path(start, end);
+        assert!(!path.is_empty());
+        // Last point should be near the end
+        let last = path.last().unwrap();
+        assert!((last.x - end.x).abs() < 1.5);
+    }
+
+    #[test]
+    fn test_nav_grid_find_path_out_of_bounds_returns_empty() {
+        let grid = NavGrid::new(10.0, 20);
+        let path = grid.find_path(Vec2::new(-20.0, 0.0), Vec2::new(5.0, 0.0));
+        assert!(path.is_empty());
+    }
+
+    #[test]
+    fn test_nav_grid_find_path_blocked_goal_returns_direct() {
+        let mut grid = NavGrid::new(10.0, 20);
+        let end = Vec2::new(5.0, 0.0);
+        if let Some((gx, gz)) = grid.world_to_grid(end.x, end.y) {
+            let idx = grid.idx(gx, gz);
+            grid.blocked[idx] = true;
+        }
+        let path = grid.find_path(Vec2::new(0.0, 0.0), end);
+        assert_eq!(path.len(), 1);
+        assert_eq!(path[0], end);
+    }
+
+    #[test]
+    fn test_nav_grid_find_path_around_obstacle() {
+        let mut grid = NavGrid::new(10.0, 20);
+        // Block a vertical wall at x=0 (grid column 10)
+        for gz in 5..15 {
+            let idx = grid.idx(10, gz);
+            grid.blocked[idx] = true;
+        }
+        let start = Vec2::new(-3.0, 0.0);
+        let end = Vec2::new(3.0, 0.0);
+        let path = grid.find_path(start, end);
+        assert!(!path.is_empty());
+    }
+
+    // ── AStarNode ordering tests ──
+
+    #[test]
+    fn test_astar_node_ordering_min_f_first() {
+        use std::collections::BinaryHeap;
+        let mut heap = BinaryHeap::new();
+        heap.push(AStarNode { gx: 0, gz: 0, f: 10.0 });
+        heap.push(AStarNode { gx: 1, gz: 1, f: 5.0 });
+        heap.push(AStarNode { gx: 2, gz: 2, f: 15.0 });
+        let best = heap.pop().unwrap();
+        assert_eq!(best.f, 5.0);
+        assert_eq!(best.gx, 1);
+    }
+
+    #[test]
+    fn test_astar_node_equality() {
+        let a = AStarNode { gx: 3, gz: 4, f: 10.0 };
+        let b = AStarNode { gx: 3, gz: 4, f: 20.0 };
+        assert_eq!(a, b); // Equality is based on position, not f
+    }
+
+    // ── Collision tests ──
+
+    #[test]
+    fn test_collides_with_tree_no_collision() {
+        let trees = vec![Vec2::new(10.0, 10.0)];
+        let result = collides_with_tree(Vec2::new(0.0, 0.0), 0.4, &trees, 1.2);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_collides_with_tree_collision() {
+        let trees = vec![Vec2::new(1.0, 0.0)];
+        let result = collides_with_tree(Vec2::new(0.5, 0.0), 0.4, &trees, 1.2);
+        assert!(result.is_some());
+        let push = result.unwrap();
+        // Push should be in the -x direction (away from tree)
+        assert!(push.x < 0.0);
+    }
+
+    #[test]
+    fn test_collides_with_tree_exact_overlap_ignored() {
+        // When distance is nearly zero, the function skips (dist > 0.001 check)
+        let trees = vec![Vec2::new(0.0, 0.0)];
+        let result = collides_with_tree(Vec2::new(0.0, 0.0), 0.4, &trees, 1.2);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_collides_with_tree_multiple_trees() {
+        let trees = vec![
+            Vec2::new(10.0, 10.0),
+            Vec2::new(1.0, 0.0),
+            Vec2::new(20.0, 20.0),
+        ];
+        let result = collides_with_tree(Vec2::new(0.5, 0.0), 0.4, &trees, 1.2);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_collide_with_walls_no_collision() {
+        let walls = HouseWalls(vec![WallRect {
+            min_x: 10.0, max_x: 11.0,
+            min_z: 10.0, max_z: 11.0,
+            min_y: 0.0, max_y: 3.0,
+        }]);
+        let mut pos = Vec3::new(0.0, 1.0, 0.0);
+        let original = pos;
+        collide_with_walls(&mut pos, 0.4, &walls);
+        assert_eq!(pos, original);
+    }
+
+    #[test]
+    fn test_collide_with_walls_pushes_out() {
+        let walls = HouseWalls(vec![WallRect {
+            min_x: -1.0, max_x: 1.0,
+            min_z: -1.0, max_z: 1.0,
+            min_y: 0.0, max_y: 3.0,
+        }]);
+        let mut pos = Vec3::new(0.9, 1.0, 0.0);
+        collide_with_walls(&mut pos, 0.4, &walls);
+        // Should be pushed out to x = 1.0 + 0.4 = 1.4
+        assert!((pos.x - 1.4).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_collide_with_walls_y_out_of_range() {
+        let walls = HouseWalls(vec![WallRect {
+            min_x: -1.0, max_x: 1.0,
+            min_z: -1.0, max_z: 1.0,
+            min_y: 0.0, max_y: 3.0,
+        }]);
+        let mut pos = Vec3::new(0.0, 5.0, 0.0); // Above the wall
+        let original = pos;
+        collide_with_walls(&mut pos, 0.4, &walls);
+        assert_eq!(pos, original);
+    }
+
+    // ── GameState default tests ──
+
+    #[test]
+    fn test_game_state_default() {
+        let game = GameState::default();
+        assert_eq!(game.kills, 0);
+        assert_eq!(game.score, 0);
+        assert_eq!(game.health, 0.0);
+        assert!(!game.is_dead);
+        assert!(!game.is_paused);
     }
 }

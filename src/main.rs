@@ -108,6 +108,8 @@ fn main() {
                 check_bullet_zombie_collision,
                 melee_attack,
                 melee_swing_animation,
+                switch_weapon,
+                mystery_box_interact,
                 zombie_attack_player,
                 update_health_ui,
                 health_regen,
@@ -142,10 +144,129 @@ struct Wall;
 struct Bullet {
     velocity: Vec3,
     lifetime: f32,
+    damage: u32,
+    penetration: u32,
+    hits: u32,
 }
 
 #[derive(Component)]
 struct Gun;
+
+#[derive(Component)]
+struct MysteryBox;
+
+#[derive(Component)]
+struct MysteryBoxPrompt;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WeaponId {
+    Pistol,
+    Smg,
+    AssaultRifle,
+    Sniper,
+    Lmg,
+}
+
+struct WeaponStats {
+    name: &'static str,
+    color: [f32; 3],
+    bullet_color: [f32; 3],
+    bullet_emissive: [f32; 3],
+    damage: u32,
+    magazine_size: u32,
+    reserve_ammo: u32,
+    reload_time: f32,
+    fire_rate: f32, // shots per second
+    full_auto: bool,
+    penetration: u32, // how many zombies a bullet passes through (0 = dies on first hit)
+    bullet_speed: f32,
+}
+
+impl WeaponId {
+    fn stats(&self) -> WeaponStats {
+        match self {
+            WeaponId::Pistol => WeaponStats {
+                name: "Pistol",
+                color: [0.05, 0.05, 0.05],
+                bullet_color: [1.0, 0.9, 0.0],
+                bullet_emissive: [5.0, 4.0, 0.0],
+                damage: 1,
+                magazine_size: 10,
+                reserve_ammo: 90,
+                reload_time: 2.0,
+                fire_rate: 5.0,
+                full_auto: false,
+                penetration: 0,
+                bullet_speed: 30.0,
+            },
+            WeaponId::Smg => WeaponStats {
+                name: "SMG",
+                color: [0.1, 0.2, 0.8],
+                bullet_color: [0.3, 0.6, 1.0],
+                bullet_emissive: [1.0, 2.0, 5.0],
+                damage: 1,
+                magazine_size: 30,
+                reserve_ammo: 150,
+                reload_time: 1.5,
+                fire_rate: 12.0,
+                full_auto: true,
+                penetration: 0,
+                bullet_speed: 28.0,
+            },
+            WeaponId::AssaultRifle => WeaponStats {
+                name: "Assault Rifle",
+                color: [0.1, 0.5, 0.1],
+                bullet_color: [0.4, 1.0, 0.3],
+                bullet_emissive: [1.0, 5.0, 0.5],
+                damage: 2,
+                magazine_size: 25,
+                reserve_ammo: 125,
+                reload_time: 2.0,
+                fire_rate: 8.0,
+                full_auto: true,
+                penetration: 1,
+                bullet_speed: 35.0,
+            },
+            WeaponId::Sniper => WeaponStats {
+                name: "Sniper",
+                color: [0.8, 0.7, 0.1],
+                bullet_color: [1.0, 1.0, 0.5],
+                bullet_emissive: [6.0, 6.0, 2.0],
+                damage: 5,
+                magazine_size: 5,
+                reserve_ammo: 30,
+                reload_time: 3.0,
+                fire_rate: 1.0,
+                full_auto: false,
+                penetration: 3,
+                bullet_speed: 60.0,
+            },
+            WeaponId::Lmg => WeaponStats {
+                name: "LMG",
+                color: [0.5, 0.1, 0.6],
+                bullet_color: [0.8, 0.3, 1.0],
+                bullet_emissive: [4.0, 1.0, 5.0],
+                damage: 1,
+                magazine_size: 50,
+                reserve_ammo: 200,
+                reload_time: 4.0,
+                fire_rate: 10.0,
+                full_auto: true,
+                penetration: 2,
+                bullet_speed: 32.0,
+            },
+        }
+    }
+}
+
+const MYSTERY_BOX_COST: u32 = 950;
+const ALL_WEAPONS: [WeaponId; 5] = [
+    WeaponId::Pistol,
+    WeaponId::Smg,
+    WeaponId::AssaultRifle,
+    WeaponId::Sniper,
+    WeaponId::Lmg,
+];
 
 #[derive(Component)]
 struct HealthText;
@@ -158,6 +279,9 @@ struct AmmoText;
 
 #[derive(Component)]
 struct ScoreText;
+
+#[derive(Component)]
+struct WeaponText;
 
 #[derive(Component)]
 struct MeleeWeapon;
@@ -186,13 +310,31 @@ enum PauseButton {
 
 // ── Resources ───────────────────────────────────────────────────────────────
 
-#[derive(Resource, Default)]
+struct PlayerWeapon {
+    id: WeaponId,
+    magazine: u32,
+    reserve_ammo: u32,
+}
+
+impl PlayerWeapon {
+    fn new(id: WeaponId) -> Self {
+        let stats = id.stats();
+        Self {
+            id,
+            magazine: stats.magazine_size,
+            reserve_ammo: stats.reserve_ammo,
+        }
+    }
+}
+
+#[derive(Resource)]
 struct GameState {
     kills: u32,
     score: u32,
-    ammo: u32,
-    magazine: u32,
+    weapons: Vec<PlayerWeapon>,
+    current_weapon: usize,
     reload_timer: Option<Timer>,
+    fire_cooldown: f32,
     health: f32,
     last_hit_time: f32,
     hit_count_in_window: u32,
@@ -203,6 +345,39 @@ struct GameState {
     melee_cooldown: f32,
 }
 
+impl Default for GameState {
+    fn default() -> Self {
+        Self {
+            kills: 0,
+            score: 0,
+            weapons: vec![PlayerWeapon::new(WeaponId::Pistol)],
+            current_weapon: 0,
+            reload_timer: None,
+            fire_cooldown: 0.0,
+            health: 100.0,
+            last_hit_time: 0.0,
+            hit_count_in_window: 0,
+            is_dead: false,
+            is_paused: false,
+            vertical_velocity: 0.0,
+            is_grounded: false,
+            melee_cooldown: 0.0,
+        }
+    }
+}
+
+impl GameState {
+    fn current_weapon(&self) -> &PlayerWeapon {
+        &self.weapons[self.current_weapon]
+    }
+    fn current_weapon_mut(&mut self) -> &mut PlayerWeapon {
+        &mut self.weapons[self.current_weapon]
+    }
+    fn current_stats(&self) -> WeaponStats {
+        self.current_weapon().id.stats()
+    }
+}
+
 impl GameState {
     fn zombie_speed(&self, config: &MapConfig) -> f32 {
         config.zombies.base_speed + (self.kills as f32 * config.zombies.speed_per_kill).min(config.zombies.max_speed_bonus)
@@ -210,6 +385,10 @@ impl GameState {
 
     fn zombie_move_chance(&self, config: &MapConfig) -> f32 {
         config.zombies.base_move_chance + (self.kills as f32 * config.zombies.move_chance_per_kill).min(config.zombies.max_move_chance_bonus)
+    }
+
+    fn has_weapon(&self, id: WeaponId) -> bool {
+        self.weapons.iter().any(|w| w.id == id)
     }
 }
 
@@ -646,8 +825,12 @@ fn setup_scene(
     let tree_radius = map_config.trees.collision_radius;
 
     game.health = map_config.player.health;
-    game.ammo = map_config.player.ammo.saturating_sub(10);
-    game.magazine = map_config.player.ammo.min(10);
+    game.weapons = vec![PlayerWeapon::new(WeaponId::Pistol)];
+    game.current_weapon = 0;
+    // Override pistol ammo from map config
+    let total_ammo = map_config.player.ammo;
+    game.weapons[0].magazine = total_ammo.min(10);
+    game.weapons[0].reserve_ammo = total_ammo.saturating_sub(10);
     game.is_grounded = true;
 
     // Ground
@@ -771,6 +954,30 @@ fn setup_scene(
             StructureType::Castle => spawn_castle(&mut commands, &mut meshes, &mut materials, &mut nav_grid, &mut floor_surfaces.0, &mut house_walls.0, ox, oz),
         }
     }
+
+    // Mystery Box - place near player spawn
+    let box_x = map_config.player.spawn[0] + 8.0;
+    let box_z = map_config.player.spawn[2] + 8.0;
+    // Base box
+    commands.spawn((
+        MysteryBox,
+        Mesh3d(meshes.add(Cuboid::new(1.5, 1.0, 1.0))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb(0.6, 0.4, 0.1),
+            ..default()
+        })),
+        Transform::from_xyz(box_x, 0.5, box_z),
+    ));
+    // Question mark floating above
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(0.3, 0.3, 0.3))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb(1.0, 0.85, 0.0),
+            emissive: LinearRgba::new(5.0, 4.0, 0.0, 1.0),
+            ..default()
+        })),
+        Transform::from_xyz(box_x, 1.8, box_z),
+    ));
 
     // Directional light (sun)
     let sa = &map_config.lighting.sun_angle;
@@ -915,7 +1122,7 @@ fn setup_ui(mut commands: Commands) {
                     ));
                 });
 
-            // Bottom bar - health and ammo
+            // Bottom bar - health, weapon, and ammo
             parent
                 .spawn(Node {
                     padding: UiRect::all(Val::Px(12.0)),
@@ -928,6 +1135,12 @@ fn setup_ui(mut commands: Commands) {
                         Text::new("HP: 100"),
                         TextFont { font_size: 24.0, ..default() },
                         TextColor(Color::srgb(0.2, 1.0, 0.2)),
+                    ));
+                    p.spawn((
+                        WeaponText,
+                        Text::new("Pistol"),
+                        TextFont { font_size: 24.0, ..default() },
+                        TextColor(Color::srgb(0.8, 0.8, 0.8)),
                     ));
                     p.spawn((
                         AmmoText,
@@ -949,6 +1162,23 @@ fn setup_ui(mut commands: Commands) {
         },
         BackgroundColor(Color::srgba(1.0, 0.0, 0.0, 0.0)),
         ZIndex(100),
+    ));
+
+    // Mystery box prompt (centered, hidden by default)
+    commands.spawn((
+        MysteryBoxPrompt,
+        Text::new(format!("Press E to buy Mystery Box [{}pts]", MYSTERY_BOX_COST)),
+        TextFont { font_size: 28.0, ..default() },
+        TextColor(Color::srgb(1.0, 0.85, 0.0)),
+        Node {
+            position_type: PositionType::Absolute,
+            bottom: Val::Px(80.0),
+            width: Val::Percent(100.0),
+            justify_content: JustifyContent::Center,
+            ..default()
+        },
+        ZIndex(50),
+        Visibility::Hidden,
     ));
 
     // Pause menu (hidden by default)
@@ -1801,24 +2031,30 @@ fn reload(
 ) {
     if game.is_dead { return; }
 
+    let stats = game.current_stats();
+
     // Tick reload timer if active
     if let Some(ref mut timer) = game.reload_timer {
         timer.tick(time.delta());
         if timer.finished() {
-            let refill = (10 - game.magazine).min(game.ammo);
-            game.magazine += refill;
-            game.ammo -= refill;
+            let mag_size = stats.magazine_size;
+            let wep = game.current_weapon_mut();
+            let refill = (mag_size - wep.magazine).min(wep.reserve_ammo);
+            wep.magazine += refill;
+            wep.reserve_ammo -= refill;
             game.reload_timer = None;
+            let wep = game.current_weapon();
             if let Ok(mut text) = ammo_text.get_single_mut() {
-                **text = format!("Ammo: {} / {}", game.magazine, game.ammo);
+                **text = format!("Ammo: {} / {}", wep.magazine, wep.reserve_ammo);
             }
         }
         return;
     }
 
-    // Manual reload with R (only if magazine isn't full and we have reserve ammo)
-    if keys.just_pressed(KeyCode::KeyR) && game.magazine < 10 && game.ammo > 0 {
-        game.reload_timer = Some(Timer::from_seconds(2.0, TimerMode::Once));
+    // Manual reload with R
+    let wep = game.current_weapon();
+    if keys.just_pressed(KeyCode::KeyR) && wep.magazine < stats.magazine_size && wep.reserve_ammo > 0 {
+        game.reload_timer = Some(Timer::from_seconds(stats.reload_time, TimerMode::Once));
         if let Ok(mut text) = ammo_text.get_single_mut() {
             **text = "Reloading...".to_string();
         }
@@ -1831,35 +2067,54 @@ fn shoot(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mouse: Res<ButtonInput<MouseButton>>,
     mut game: ResMut<GameState>,
+    time: Res<Time>,
     player_q: Query<&Transform, With<Player>>,
     anchor_q: Query<&Transform, (With<CameraAnchor>, Without<Player>)>,
     mut ammo_text: Query<&mut Text, With<AmmoText>>,
 ) {
-    if game.is_dead || !mouse.just_pressed(MouseButton::Left) {
-        return;
+    if game.is_dead { return; }
+
+    // Tick fire cooldown
+    if game.fire_cooldown > 0.0 {
+        game.fire_cooldown -= time.delta_secs();
     }
-    // Can't fire while reloading
-    if game.reload_timer.is_some() {
-        return;
-    }
-    if game.magazine == 0 {
-        // Auto-reload if we have reserve ammo
-        if game.ammo > 0 {
-            game.reload_timer = Some(Timer::from_seconds(2.0, TimerMode::Once));
+
+    let stats = game.current_stats();
+
+    // Check input based on full auto vs semi auto
+    let wants_fire = if stats.full_auto {
+        mouse.pressed(MouseButton::Left)
+    } else {
+        mouse.just_pressed(MouseButton::Left)
+    };
+
+    if !wants_fire { return; }
+    if game.fire_cooldown > 0.0 { return; }
+    if game.reload_timer.is_some() { return; }
+
+    let wep = game.current_weapon();
+    if wep.magazine == 0 {
+        if wep.reserve_ammo > 0 {
+            game.reload_timer = Some(Timer::from_seconds(stats.reload_time, TimerMode::Once));
             if let Ok(mut text) = ammo_text.get_single_mut() {
                 **text = "Reloading...".to_string();
             }
         }
         return;
     }
-    game.magazine -= 1;
+
+    game.fire_cooldown = 1.0 / stats.fire_rate;
+    game.current_weapon_mut().magazine -= 1;
+
+    let wep = game.current_weapon();
     if let Ok(mut text) = ammo_text.get_single_mut() {
-        **text = format!("Ammo: {} / {}", game.magazine, game.ammo);
+        **text = format!("Ammo: {} / {}", wep.magazine, wep.reserve_ammo);
     }
 
     // Auto-reload when magazine hits 0
-    if game.magazine == 0 && game.ammo > 0 {
-        game.reload_timer = Some(Timer::from_seconds(2.0, TimerMode::Once));
+    let wep = game.current_weapon();
+    if wep.magazine == 0 && wep.reserve_ammo > 0 {
+        game.reload_timer = Some(Timer::from_seconds(stats.reload_time, TimerMode::Once));
         if let Ok(mut text) = ammo_text.get_single_mut() {
             **text = "Reloading...".to_string();
         }
@@ -1872,15 +2127,21 @@ fn shoot(
     let direction = combined * Vec3::NEG_Z;
     let spawn_pos = pt.translation + Vec3::new(0.0, 0.7, 0.0) + direction * 0.5;
 
+    let bc = stats.bullet_color;
+    let be = stats.bullet_emissive;
+
     commands.spawn((
         Bullet {
-            velocity: direction.normalize() * 30.0,
+            velocity: direction.normalize() * stats.bullet_speed,
             lifetime: 2.0,
+            damage: stats.damage,
+            penetration: stats.penetration,
+            hits: 0,
         },
         Mesh3d(meshes.add(Sphere::new(0.05))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(1.0, 0.9, 0.0),
-            emissive: LinearRgba::new(5.0, 4.0, 0.0, 1.0),
+            base_color: Color::srgb(bc[0], bc[1], bc[2]),
+            emissive: LinearRgba::new(be[0], be[1], be[2], 1.0),
             ..default()
         })),
         Transform::from_translation(spawn_pos),
@@ -1903,19 +2164,18 @@ fn bullet_movement(
 
 fn check_bullet_zombie_collision(
     mut commands: Commands,
-    bullets: Query<(Entity, &Transform), With<Bullet>>,
+    mut bullets: Query<(Entity, &Transform, &mut Bullet)>,
     zombies: Query<(Entity, &Transform), With<Zombie>>,
     mut game: ResMut<GameState>,
     mut kill_text: Query<&mut Text, (With<KillText>, Without<ScoreText>)>,
     mut score_text: Query<&mut Text, (With<ScoreText>, Without<KillText>)>,
 ) {
-    for (bullet_entity, bullet_transform) in bullets.iter() {
+    for (bullet_entity, bullet_transform, mut bullet) in bullets.iter_mut() {
         for (zombie_entity, zombie_transform) in zombies.iter() {
             let dist = bullet_transform
                 .translation
                 .distance(zombie_transform.translation);
             if dist < 1.0 {
-                commands.entity(bullet_entity).despawn();
                 commands.entity(zombie_entity).despawn();
                 game.kills += 1;
                 game.score += 100;
@@ -1925,8 +2185,140 @@ fn check_bullet_zombie_collision(
                 if let Ok(mut text) = score_text.get_single_mut() {
                     **text = format!("Score: {}", game.score);
                 }
-                break;
+                bullet.hits += 1;
+                if bullet.hits > bullet.penetration {
+                    commands.entity(bullet_entity).despawn();
+                    break;
+                }
+                // Bullet continues through - don't break
             }
+        }
+    }
+}
+
+// ── Weapon Switching & Mystery Box ───────────────────────────────────────────
+
+fn switch_weapon(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut game: ResMut<GameState>,
+    mut ammo_text: Query<&mut Text, (With<AmmoText>, Without<WeaponText>)>,
+    mut weapon_text: Query<&mut Text, (With<WeaponText>, Without<AmmoText>)>,
+    mut gun_q: Query<&mut MeshMaterial3d<StandardMaterial>, With<Gun>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    if game.is_dead { return; }
+    if game.weapons.len() <= 1 { return; }
+    if !keys.just_pressed(KeyCode::KeyE) { return; }
+
+    // Cancel any reload in progress
+    game.reload_timer = None;
+    game.fire_cooldown = 0.0;
+
+    game.current_weapon = (game.current_weapon + 1) % game.weapons.len();
+    let stats = game.current_stats();
+    let wep = game.current_weapon();
+
+    if let Ok(mut text) = ammo_text.get_single_mut() {
+        **text = format!("Ammo: {} / {}", wep.magazine, wep.reserve_ammo);
+    }
+    if let Ok(mut text) = weapon_text.get_single_mut() {
+        **text = stats.name.to_string();
+    }
+
+    // Update gun color
+    let c = stats.color;
+    if let Ok(gun_mat) = gun_q.get_single_mut() {
+        if let Some(mat) = materials.get_mut(gun_mat.id()) {
+            mat.base_color = Color::srgb(c[0], c[1], c[2]);
+        }
+    }
+}
+
+fn mystery_box_interact(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut game: ResMut<GameState>,
+    player_q: Query<&Transform, With<Player>>,
+    box_q: Query<&Transform, With<MysteryBox>>,
+    mut prompt_q: Query<&mut Visibility, With<MysteryBoxPrompt>>,
+    mut ammo_text: Query<&mut Text, (With<AmmoText>, Without<WeaponText>, Without<ScoreText>)>,
+    mut weapon_text: Query<&mut Text, (With<WeaponText>, Without<AmmoText>, Without<ScoreText>)>,
+    mut score_text: Query<&mut Text, (With<ScoreText>, Without<AmmoText>, Without<WeaponText>)>,
+    mut gun_q: Query<&mut MeshMaterial3d<StandardMaterial>, With<Gun>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let Ok(pt) = player_q.get_single() else { return };
+    let Ok(bt) = box_q.get_single() else { return };
+
+    let dist = pt.translation.distance(bt.translation);
+    let near_box = dist < 3.5;
+
+    // Show/hide prompt
+    if let Ok(mut vis) = prompt_q.get_single_mut() {
+        *vis = if near_box && !game.is_dead { Visibility::Visible } else { Visibility::Hidden };
+    }
+
+    if !near_box || game.is_dead { return; }
+
+    // E is also weapon switch - only buy if player has 1 weapon, or use different check
+    // Use E when near box to buy, E away from box to switch
+    if !keys.just_pressed(KeyCode::KeyE) { return; }
+
+    if game.score < MYSTERY_BOX_COST {
+        return;
+    }
+
+    // Pick a random weapon the player doesn't have yet
+    let mut rng = rand::thread_rng();
+    let available: Vec<WeaponId> = ALL_WEAPONS
+        .iter()
+        .copied()
+        .filter(|w| !game.has_weapon(*w))
+        .collect();
+
+    if available.is_empty() {
+        // Player has all weapons - give ammo to current weapon instead
+        game.score -= MYSTERY_BOX_COST;
+        let stats = game.current_stats();
+        game.current_weapon_mut().reserve_ammo += stats.reserve_ammo / 2;
+        let wep = game.current_weapon();
+        if let Ok(mut text) = ammo_text.get_single_mut() {
+            **text = format!("Ammo: {} / {}", wep.magazine, wep.reserve_ammo);
+        }
+        if let Ok(mut text) = score_text.get_single_mut() {
+            **text = format!("Score: {}", game.score);
+        }
+        return;
+    }
+
+    let idx = rng.gen_range(0..available.len());
+    let new_weapon_id = available[idx];
+    let new_weapon = PlayerWeapon::new(new_weapon_id);
+    game.weapons.push(new_weapon);
+    game.score -= MYSTERY_BOX_COST;
+
+    // Switch to the new weapon
+    game.current_weapon = game.weapons.len() - 1;
+    game.reload_timer = None;
+    game.fire_cooldown = 0.0;
+
+    let stats = game.current_stats();
+    let wep = game.current_weapon();
+
+    if let Ok(mut text) = ammo_text.get_single_mut() {
+        **text = format!("Ammo: {} / {}", wep.magazine, wep.reserve_ammo);
+    }
+    if let Ok(mut text) = weapon_text.get_single_mut() {
+        **text = stats.name.to_string();
+    }
+    if let Ok(mut text) = score_text.get_single_mut() {
+        **text = format!("Score: {}", game.score);
+    }
+
+    // Update gun color
+    let c = stats.color;
+    if let Ok(gun_mat) = gun_q.get_single_mut() {
+        if let Some(mat) = materials.get_mut(gun_mat.id()) {
+            mat.base_color = Color::srgb(c[0], c[1], c[2]);
         }
     }
 }
